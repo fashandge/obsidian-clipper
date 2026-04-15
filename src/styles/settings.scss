@@ -299,6 +299,29 @@ label {
 	.setting-item-list-remove {
 		margin-inline-start: auto;
 	}
+
+	.vault-list-content {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		gap: 0.35rem;
+		min-width: 0;
+	}
+
+	.vault-list-title-row {
+		font-weight: 500;
+	}
+
+	.vault-folder-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+
+		.btn {
+			padding: 0.25rem 0.5rem;
+			font-size: var(--font-ui-smaller);
+		}
+	}
 }
 
 .setting-item-list {

@@ -133,6 +133,7 @@
 								<div class="setting-item-description" data-i18n="vaultsDescription">By default, clipped notes are saved to the currently open vault. You can add vaults here if you want the option to save to different vaults. Vault names must exactly match the name of the Obsidian vault. Press <strong>enter</strong> to add a&nbsp;vault.</div>
 								<input type="text" id="vault-input" data-i18n="addVaultPlaceholder" placeholder="Press enter to add a vault" autocomplete="off" spellcheck="false" />
 								<ul id="vault-list" class="setting-item-list"></ul>
+								<div id="local-vault-folder-settings" class="setting-item-description" style="display: none;" data-i18n="localVaultWritesDescription">Connect each vault to a local Obsidian folder to save Markdown directly from Chrome without foregrounding Obsidian. Daily note templates will continue to use Obsidian.</div>
 								</div>
 							</div>
 							<div class="setting-group" id="hotkeys-subsection">
@@ -158,6 +159,7 @@
 												<option value="addToObsidian" selected data-i18n="addToObsidian">Add to Obsidian</option>
 												<option value="copyToClipboard" data-i18n="copyToClipboard">Copy to clipboard</option>
 												<option value="saveFile" data-i18n="saveFile">Save file</option>
+												<option value="saveToLocalFolder" data-i18n="saveToLocalFolder">Save to local folder</option>
 											</select>
 										</div>
 									</div>

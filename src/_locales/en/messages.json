@@ -144,6 +144,9 @@
 	"copyToClipboard": {
 		"message": "Copy to clipboard"
 	},
+	"clipSelectionAsNewNote": {
+		"message": "Clip selection as new note"
+	},
 	"createNewNote": {
 		"message": "Create new note"
 	},
@@ -329,6 +332,9 @@
 	},
 	"failedToSaveFile": {
 		"message": "Failed to save file"
+	},
+	"failedToSaveLocalFolderFile": {
+		"message": "Failed to save to the local folder"
 	},
 	"failedToSaveProvider": {
 		"message": "Failed to save provider. Please try again."
@@ -900,6 +906,9 @@
 	"saveFile": {
 		"message": "Save file..."
 	},
+	"saveToLocalFolder": {
+		"message": "Save to local folder"
+	},
 	"searchHighlightsPlaceholder": {
 		"message": "Search highlights…"
 	},
@@ -977,6 +986,45 @@
 	},
 	"sortZA": {
 		"message": "Z to A"
+	},
+	"localVaultWritesDescription": {
+		"message": "Chrome-only: connect each vault to a local Obsidian folder to save Markdown directly without foregrounding Obsidian. The first connection opens a folder picker. Daily note templates still use Obsidian."
+	},
+	"localVaultChooseFolder": {
+		"message": "Choose folder"
+	},
+	"localVaultReconnectFolder": {
+		"message": "Reconnect"
+	},
+	"localVaultClearFolder": {
+		"message": "Clear access"
+	},
+	"localVaultStatusChecking": {
+		"message": "Checking local folder access..."
+	},
+	"localVaultStatusMissing": {
+		"message": "No local folder connected yet."
+	},
+	"localVaultStatusConnected": {
+		"message": "Connected to $1"
+	},
+	"localVaultStatusNeedsReconnect": {
+		"message": "Access to $1 needs to be reconnected."
+	},
+	"localVaultErrorMissingBinding": {
+		"message": "This vault is not connected to a local folder yet. Open settings and choose a folder first."
+	},
+	"localVaultErrorMissingVault": {
+		"message": "Add a vault in settings, then connect that vault to a local folder before using local-folder saves."
+	},
+	"localVaultErrorPermissionDenied": {
+		"message": "Chrome no longer has write access to this vault folder. Reconnect the folder in settings and try again."
+	},
+	"localVaultErrorFileExists": {
+		"message": "A note with this name already exists in the selected local folder."
+	},
+	"localVaultErrorUnsupportedDaily": {
+		"message": "Daily note templates still use the Obsidian app, because the extension does not know your daily note path."
 	},
 	"specificNoteName": {
 		"message": "Specific note name"

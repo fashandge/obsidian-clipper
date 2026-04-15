@@ -23,6 +23,8 @@ import { sanitizeFileName } from '../utils/string-utils';
 import { saveFile } from '../utils/file-utils';
 import { translatePage, getMessage, setupLanguageAndDirection } from '../utils/i18n';
 import { formatPropertyValue } from '../utils/shared';
+import { LocalVaultWriteError, saveToLocalVault } from '../utils/local-vault-writer';
+import { isChromeLocalVaultWriteSupported } from '../utils/local-vault-storage';
 
 interface ReaderModeResponse {
 	success: boolean;
@@ -35,6 +37,8 @@ let templates: Template[] = [];
 let currentVariables: { [key: string]: string } = {};
 let currentTabId: number | undefined;
 let lastSelectedVault: string | null = null;
+let canUseChromeLocalVaultWrites = false;
+let forcedSelectedHtml: string | null = null;
 
 const isSidePanel = window.location.pathname.includes('side-panel.html');
 const urlParams = new URLSearchParams(window.location.search);
@@ -234,6 +238,29 @@ const debouncedHighlightRefresh = debounce(() => {
 	}
 }, 300);
 
+async function loadPendingSelectionClipRequest(tabId: number): Promise<void> {
+	const result = await browser.storage.local.get('selection_clip_request') as {
+		selection_clip_request?: {
+			tabId?: number;
+			selectedHtml?: string;
+			createdAt?: number;
+		};
+	};
+
+	const request = result.selection_clip_request;
+	if (
+		request
+		&& request.tabId === tabId
+		&& typeof request.selectedHtml === 'string'
+		&& typeof request.createdAt === 'number'
+		&& Date.now() - request.createdAt < 60_000
+	) {
+		forcedSelectedHtml = request.selectedHtml;
+	}
+
+	await browser.storage.local.remove('selection_clip_request');
+}
+
 function setupStorageListeners() {
 	browser.storage.local.onChanged.addListener((changes) => {
 		if (changes.highlights) {
@@ -301,7 +328,9 @@ document.addEventListener('DOMContentLoaded', async function() {
 		currentTabId = response.tabId;
 		const tab = await getTabInfo(currentTabId);
 		const currentBrowser = await detectBrowser();
+		canUseChromeLocalVaultWrites = currentBrowser === 'chrome' && isChromeLocalVaultWriteSupported();
 		const isMobile = currentBrowser === 'mobile-safari';
+		await loadPendingSelectionClipRequest(currentTabId);
 
 		const openBehavior: Settings['openBehavior'] = isMobile && loadedSettings.openBehavior !== 'reader' ? 'popup' : loadedSettings.openBehavior;
 
@@ -701,10 +730,11 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 		const extractedData = await extractionPromise;
 		if (extractedData) {
 			const currentUrl = tab.url;
+			const selectedHtml = forcedSelectedHtml ?? extractedData.selectedHtml;
 
 			const initializedContent = await initializePageContent(
 				extractedData.content,
-				extractedData.selectedHtml,
+				selectedHtml,
 				extractedData.extractedContent,
 				currentUrl,
 				extractedData.schemaOrgData,
@@ -1275,6 +1305,58 @@ async function handleSaveToDownloads() {
 	}
 }
 
+function getLocalVaultErrorMessageKey(error: unknown): string {
+	if (error instanceof LocalVaultWriteError) {
+		switch (error.code) {
+			case 'missing-vault':
+				return 'localVaultErrorMissingVault';
+			case 'missing-binding':
+				return 'localVaultErrorMissingBinding';
+			case 'permission-denied':
+				return 'localVaultErrorPermissionDenied';
+			case 'file-exists':
+				return 'localVaultErrorFileExists';
+			case 'daily-notes-unsupported':
+				return 'localVaultErrorUnsupportedDaily';
+			default:
+				return 'failedToSaveLocalFolderFile';
+		}
+	}
+
+	return 'failedToSaveLocalFolderFile';
+}
+
+function runPopupAction(action: () => void | Promise<void>): void {
+	Promise.resolve(action()).catch((error) => {
+		console.error('Popup action failed:', error);
+	});
+}
+
+function resolveSelectedVault(vaultDropdown: HTMLSelectElement): string {
+	if (currentTemplate?.vault) {
+		return currentTemplate.vault;
+	}
+
+	if (vaultDropdown.value) {
+		return vaultDropdown.value;
+	}
+
+	if (lastSelectedVault && loadedSettings.vaults.includes(lastSelectedVault)) {
+		return lastSelectedVault;
+	}
+
+	const bindingVaults = Object.keys(loadedSettings.localVaultBindings);
+	if (bindingVaults.length === 1) {
+		return bindingVaults[0];
+	}
+
+	if (loadedSettings.vaults.length === 1) {
+		return loadedSettings.vaults[0];
+	}
+
+	return '';
+}
+
 function determineMainAction() {
 	const mainButton = document.getElementById('clip-btn');
 	const moreDropdown = document.getElementById('more-dropdown');
@@ -1284,33 +1366,60 @@ function determineMainAction() {
 	// Clear existing secondary actions
 	secondaryActions.textContent = '';
 
+	const supportsLocalFolderAction = canUseChromeLocalVaultWrites;
+	const activeSaveBehavior = !supportsLocalFolderAction && loadedSettings.saveBehavior === 'saveToLocalFolder'
+		? 'addToObsidian'
+		: loadedSettings.saveBehavior;
+
+	const addStandardSecondaryActions = (exclude: Settings['saveBehavior'] | 'addToObsidian') => {
+		if (exclude !== 'addToObsidian') {
+			addSecondaryAction(secondaryActions, 'addToObsidian', () => handleClipObsidian());
+		}
+		if (exclude !== 'copyToClipboard') {
+			addSecondaryAction(secondaryActions, 'copyToClipboard', copyContent);
+		}
+		if (exclude !== 'saveFile') {
+			addSecondaryAction(secondaryActions, 'saveFile', handleSaveToDownloads);
+		}
+		if (supportsLocalFolderAction && exclude !== 'saveToLocalFolder') {
+			addSecondaryAction(secondaryActions, 'saveToLocalFolder', () => handleClipToLocalFolder());
+		}
+	};
+
 	// Set up actions based on saved behavior
-	switch (loadedSettings.saveBehavior) {
+	switch (activeSaveBehavior) {
 		case 'copyToClipboard':
 			mainButton.textContent = getMessage('copyToClipboard');
-			mainButton.onclick = () => copyContent();
-			// Add direct actions to secondary
-			addSecondaryAction(secondaryActions, 'addToObsidian', () => handleClipObsidian());
-			addSecondaryAction(secondaryActions, 'saveFile', handleSaveToDownloads);
+			mainButton.onclick = () => runPopupAction(copyContent);
+			addStandardSecondaryActions('copyToClipboard');
 			break;
 		case 'saveFile':
 			mainButton.textContent = getMessage('saveFile');
-			mainButton.onclick = () => handleSaveToDownloads();
-			// Add direct actions to secondary
-			addSecondaryAction(secondaryActions, 'addToObsidian', () => handleClipObsidian());
-			addSecondaryAction(secondaryActions, 'copyToClipboard', copyContent);
+			mainButton.onclick = () => runPopupAction(handleSaveToDownloads);
+			addStandardSecondaryActions('saveFile');
+			break;
+		case 'saveToLocalFolder':
+			mainButton.textContent = getMessage('saveToLocalFolder');
+			mainButton.onclick = () => runPopupAction(handleClipToLocalFolder);
+			addStandardSecondaryActions('saveToLocalFolder');
 			break;
 		default: // 'addToObsidian'
 			mainButton.textContent = getMessage('addToObsidian');
-			mainButton.onclick = () => handleClipObsidian();
-			// Add direct actions to secondary
-			addSecondaryAction(secondaryActions, 'copyToClipboard', copyContent);
-			addSecondaryAction(secondaryActions, 'saveFile', handleSaveToDownloads);
+			mainButton.onclick = () => runPopupAction(handleClipObsidian);
+			addStandardSecondaryActions('addToObsidian');
 	}
 }
 
-async function handleClipObsidian(): Promise<void> {
-	if (!currentTemplate) return;
+async function prepareClipSaveData(): Promise<{
+	fileContent: string;
+	selectedVault: string;
+	isDailyNote: boolean;
+	noteName: string;
+	path: string;
+}> {
+	if (!currentTemplate) {
+		throw new Error('No template selected.');
+	}
 
 	const vaultDropdown = document.getElementById('vault-select') as HTMLSelectElement;
 	const noteContentField = document.getElementById('note-content-field') as HTMLTextAreaElement;
@@ -1320,45 +1429,105 @@ async function handleClipObsidian(): Promise<void> {
 
 	if (!vaultDropdown || !noteContentField) {
 		showError('Some required fields are missing. Please try reloading the extension.');
-		return;
+		throw new Error('Some required fields are missing. Please try reloading the extension.');
 	}
 
-	try {
-		// Handle interpreter if needed
-		if (generalSettings.interpreterEnabled && interpretBtn && collectPromptVariables(currentTemplate).length > 0) {
-			if (interpretBtn.classList.contains('processing')) {
-				await waitForInterpreter(interpretBtn);
-			} else if (!interpretBtn.classList.contains('done')) {
-				interpretBtn.click();
-				await waitForInterpreter(interpretBtn);
-			}
+	// Handle interpreter if needed
+	if (generalSettings.interpreterEnabled && interpretBtn && collectPromptVariables(currentTemplate).length > 0) {
+		if (interpretBtn.classList.contains('processing')) {
+			await waitForInterpreter(interpretBtn);
+		} else if (!interpretBtn.classList.contains('done')) {
+			interpretBtn.click();
+			await waitForInterpreter(interpretBtn);
 		}
+	}
 
-		// Gather content
-		const properties = getPropertiesFromDOM();
+	// Gather content
+	const properties = getPropertiesFromDOM();
 
-		const frontmatter = await generateFrontmatter(properties);
-		const fileContent = frontmatter + noteContentField.value;
+	const frontmatter = await generateFrontmatter(properties);
+	const fileContent = frontmatter + noteContentField.value;
 
-		// Save to Obsidian
-		const selectedVault = vaultDropdown.value || currentTemplate.vault || '';
-		const isDailyNote = currentTemplate.behavior === 'append-daily' || currentTemplate.behavior === 'prepend-daily';
-		const noteName = isDailyNote ? '' : noteNameField?.value || '';
-		const path = isDailyNote ? '' : pathField?.value || '';
+	// Save to Obsidian
+	const selectedVault = resolveSelectedVault(vaultDropdown);
+	const isDailyNote = currentTemplate.behavior === 'append-daily' || currentTemplate.behavior === 'prepend-daily';
+	const noteName = isDailyNote ? '' : noteNameField?.value || '';
+	const path = isDailyNote ? '' : pathField?.value || '';
 
-		await saveToObsidian(fileContent, noteName, path, selectedVault, currentTemplate.behavior);
-		const tabInfo = await getCurrentTabInfo();
-		await incrementStat('addToObsidian', selectedVault, path, tabInfo.url, tabInfo.title);
+	return {
+		fileContent,
+		selectedVault,
+		isDailyNote,
+		noteName,
+		path,
+	};
+}
 
+async function finalizeClipSuccess(selectedVault: string, path: string): Promise<void> {
+	if (!currentTemplate?.vault) {
 		lastSelectedVault = selectedVault;
 		await setLocalStorage('lastSelectedVault', lastSelectedVault);
+	}
 
-		if (!isSidePanel) {
-			setTimeout(() => window.close(), 500);
-		}
+	if (!isSidePanel) {
+		setTimeout(() => window.close(), 500);
+	}
+}
+
+async function handleClipObsidian(): Promise<void> {
+	if (!currentTemplate) return;
+
+	try {
+		const saveData = await prepareClipSaveData();
+		await saveToObsidian(
+			saveData.fileContent,
+			saveData.noteName,
+			saveData.path,
+			saveData.selectedVault,
+			currentTemplate.behavior
+		);
+		const tabInfo = await getCurrentTabInfo();
+		await incrementStat('addToObsidian', saveData.selectedVault, saveData.path, tabInfo.url, tabInfo.title);
+		await finalizeClipSuccess(saveData.selectedVault, saveData.path);
 	} catch (error) {
 		console.error('Error in handleClipObsidian:', error);
 		showError('failedToSaveFile');
+		throw error;
+	}
+}
+
+async function handleClipToLocalFolder(): Promise<void> {
+	if (!currentTemplate) return;
+
+	try {
+		const saveData = await prepareClipSaveData();
+		if (saveData.isDailyNote) {
+			await saveToObsidian(
+				saveData.fileContent,
+				saveData.noteName,
+				saveData.path,
+				saveData.selectedVault,
+				currentTemplate.behavior
+			);
+			const tabInfo = await getCurrentTabInfo();
+			await incrementStat('addToObsidian', saveData.selectedVault, saveData.path, tabInfo.url, tabInfo.title);
+			await finalizeClipSuccess(saveData.selectedVault, saveData.path);
+			return;
+		}
+
+		await saveToLocalVault({
+			fileContent: saveData.fileContent,
+			noteName: saveData.noteName,
+			path: saveData.path,
+			vault: saveData.selectedVault,
+			behavior: currentTemplate.behavior,
+		});
+		const tabInfo = await getCurrentTabInfo();
+		await incrementStat('saveToLocalFolder', saveData.selectedVault, saveData.path, tabInfo.url, tabInfo.title);
+		await finalizeClipSuccess(saveData.selectedVault, saveData.path);
+	} catch (error) {
+		console.error('Error in handleClipToLocalFolder:', error);
+		showError(getLocalVaultErrorMessageKey(error));
 		throw error;
 	}
 }
@@ -1385,7 +1554,7 @@ function addSecondaryAction(container: Element, actionType: string, handler: () 
 	menuItem.appendChild(menuItemIcon);
 	menuItem.appendChild(menuItemTitle);
 	
-	menuItem.addEventListener('click', handler);
+	menuItem.addEventListener('click', () => runPopupAction(handler));
 	container.appendChild(menuItem);
 	initializeIcons(menuItem);
 }
@@ -1394,6 +1563,7 @@ function getActionIcon(actionType: string): string {
 	switch (actionType) {
 		case 'copyToClipboard': return 'copy';
 		case 'saveFile': return 'file-down';
+		case 'saveToLocalFolder': return 'folder';
 		case 'addToObsidian': return 'pen-line';
 		default: return 'plus';
 	}

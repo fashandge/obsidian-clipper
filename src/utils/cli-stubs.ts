@@ -8,6 +8,7 @@ export default {} as any;
 
 export const generalSettings: Settings = {
 	vaults: [],
+	localVaultBindings: {},
 	betaFeatures: false,
 	legacyMode: false,
 	silentOpen: false,
@@ -44,6 +45,7 @@ export const generalSettings: Settings = {
 		addToObsidian: 0,
 		saveFile: 0,
 		copyToClipboard: 0,
+		saveToLocalFolder: 0,
 		share: 0,
 	},
 	history: [],

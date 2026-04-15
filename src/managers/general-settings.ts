@@ -18,6 +18,12 @@ import { getClipHistory } from '../utils/storage-utils';
 import dayjs from 'dayjs';
 import weekOfYear from 'dayjs/plugin/weekOfYear';
 import { showModal, hideModal } from '../utils/modal-utils';
+import {
+	chooseLocalVaultFolder,
+	clearStoredLocalVaultFolder,
+	getLocalVaultPermissionState,
+	isChromeLocalVaultWriteSupported,
+} from '../utils/local-vault-storage';
 
 dayjs.extend(weekOfYear);
 
@@ -27,6 +33,8 @@ const STORE_URLS = {
 	safari: 'https://apps.apple.com/us/app/obsidian-web-clipper/id6720708363',
 	edge: 'https://microsoftedge.microsoft.com/addons/detail/obsidian-web-clipper/eigdjhmgnaaeaonimdklocfekkaanfme'
 };
+
+let canUseChromeLocalVaultWrites = false;
 
 export function updateVaultList(): void {
 	const vaultList = document.getElementById('vault-list') as HTMLUListElement;
@@ -43,9 +51,57 @@ export function updateVaultList(): void {
 		dragHandle.appendChild(createElementWithHTML('i', '', { 'data-lucide': 'grip-vertical' }));
 		li.appendChild(dragHandle);
 
+		const content = createElementWithClass('div', 'vault-list-content');
+		const titleRow = createElementWithClass('div', 'vault-list-title-row');
 		const span = document.createElement('span');
 		span.textContent = vault;
-		li.appendChild(span);
+		titleRow.appendChild(span);
+		content.appendChild(titleRow);
+
+		if (canUseChromeLocalVaultWrites) {
+			const status = createElementWithClass('div', 'setting-item-description');
+			status.textContent = getMessage('localVaultStatusChecking');
+			content.appendChild(status);
+
+			const controls = createElementWithClass('div', 'vault-folder-controls');
+			const chooseButton = document.createElement('button');
+			chooseButton.type = 'button';
+			chooseButton.className = 'btn';
+			chooseButton.textContent = getMessage('localVaultChooseFolder');
+			chooseButton.addEventListener('click', async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				await handleVaultFolderSelection(vault);
+			});
+			controls.appendChild(chooseButton);
+
+			const reconnectButton = document.createElement('button');
+			reconnectButton.type = 'button';
+			reconnectButton.className = 'btn';
+			reconnectButton.textContent = getMessage('localVaultReconnectFolder');
+			reconnectButton.addEventListener('click', async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				await handleVaultFolderSelection(vault);
+			});
+			controls.appendChild(reconnectButton);
+
+			const clearButton = document.createElement('button');
+			clearButton.type = 'button';
+			clearButton.className = 'btn';
+			clearButton.textContent = getMessage('localVaultClearFolder');
+			clearButton.addEventListener('click', async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				await handleVaultFolderClear(vault);
+			});
+			controls.appendChild(clearButton);
+
+			content.appendChild(controls);
+			void updateLocalVaultStatus(vault, status, chooseButton, reconnectButton, clearButton);
+		}
+
+		li.appendChild(content);
 
 		const removeBtn = createElementWithClass('button', 'setting-item-list-remove clickable-icon');
 		removeBtn.setAttribute('type', 'button');
@@ -74,9 +130,87 @@ export function addVault(vault: string): void {
 }
 
 export function removeVault(index: number): void {
+	const vaultName = generalSettings.vaults[index];
 	generalSettings.vaults.splice(index, 1);
+	const nextBindings = { ...generalSettings.localVaultBindings };
+	delete nextBindings[vaultName];
+	generalSettings.localVaultBindings = nextBindings;
 	saveSettings();
+	if (vaultName) {
+		void clearStoredLocalVaultFolder(vaultName);
+	}
 	updateVaultList();
+}
+
+async function handleVaultFolderSelection(vault: string): Promise<void> {
+	try {
+		const binding = await chooseLocalVaultFolder(vault);
+		await saveSettings({
+			...generalSettings,
+			localVaultBindings: {
+				...generalSettings.localVaultBindings,
+				[vault]: binding,
+			},
+		});
+		updateVaultList();
+	} catch (error) {
+		console.error(`Failed to select local folder for vault "${vault}"`, error);
+		alert(error instanceof Error ? error.message : getMessage('failedToSaveFile'));
+	}
+}
+
+async function handleVaultFolderClear(vault: string): Promise<void> {
+	try {
+		const nextBindings = { ...generalSettings.localVaultBindings };
+		delete nextBindings[vault];
+		await clearStoredLocalVaultFolder(vault);
+		await saveSettings({
+			...generalSettings,
+			localVaultBindings: nextBindings,
+		});
+		updateVaultList();
+	} catch (error) {
+		console.error(`Failed to clear local folder for vault "${vault}"`, error);
+		alert(error instanceof Error ? error.message : getMessage('failedToSaveFile'));
+	}
+}
+
+async function updateLocalVaultStatus(
+	vault: string,
+	statusElement: HTMLElement,
+	chooseButton: HTMLButtonElement,
+	reconnectButton: HTMLButtonElement,
+	clearButton: HTMLButtonElement
+): Promise<void> {
+	const binding = generalSettings.localVaultBindings[vault];
+	if (!binding) {
+		statusElement.textContent = getMessage('localVaultStatusMissing');
+		chooseButton.style.display = 'inline-flex';
+		reconnectButton.style.display = 'none';
+		clearButton.style.display = 'none';
+		return;
+	}
+
+	statusElement.textContent = getMessage('localVaultStatusConnected', [binding.folderName]);
+	chooseButton.style.display = 'none';
+	reconnectButton.style.display = 'inline-flex';
+	clearButton.style.display = 'inline-flex';
+
+	try {
+		const permission = await getLocalVaultPermissionState(vault);
+		if (permission === 'granted') {
+			statusElement.textContent = getMessage('localVaultStatusConnected', [binding.folderName]);
+			return;
+		}
+		if (permission === 'missing') {
+			statusElement.textContent = getMessage('localVaultStatusMissing');
+		} else {
+			statusElement.textContent = getMessage('localVaultStatusNeedsReconnect', [binding.folderName]);
+		}
+	} catch (error) {
+		console.warn(`Failed to check local vault permission for "${vault}"`, error);
+		statusElement.textContent = getMessage('localVaultStatusNeedsReconnect', [binding.folderName]);
+	}
 }
 
 export async function setShortcutInstructions() {
@@ -174,6 +308,13 @@ export function initializeGeneralSettings(): void {
 
 		// Add version check initialization
 		await initializeVersionDisplay();
+		const browser = await detectBrowser();
+		canUseChromeLocalVaultWrites = browser === 'chrome' && isChromeLocalVaultWriteSupported();
+
+		const localVaultSettingsSection = document.getElementById('local-vault-folder-settings');
+		if (localVaultSettingsSection) {
+			localVaultSettingsSection.style.display = canUseChromeLocalVaultWrites ? 'block' : 'none';
+		}
 
 		// Get clip history and ratings
 		const history = await getClipHistory();
@@ -362,14 +503,27 @@ function initializeResetDefaultTemplateButton(): void {
 }
 
 function initializeSaveBehaviorDropdown(): void {
-    const dropdown = document.getElementById('save-behavior-dropdown') as HTMLSelectElement;
-    if (!dropdown) return;
+	const dropdown = document.getElementById('save-behavior-dropdown') as HTMLSelectElement;
+	if (!dropdown) return;
 
-    dropdown.value = generalSettings.saveBehavior;
-    dropdown.addEventListener('change', () => {
-        const newValue = dropdown.value as 'addToObsidian' | 'copyToClipboard' | 'saveFile';
-        saveSettings({ saveBehavior: newValue });
-    });
+	const localOption = dropdown.querySelector('option[value="saveToLocalFolder"]') as HTMLOptionElement | null;
+	if (localOption) {
+		localOption.hidden = !canUseChromeLocalVaultWrites;
+	}
+
+	const initialValue = !canUseChromeLocalVaultWrites && generalSettings.saveBehavior === 'saveToLocalFolder'
+		? 'addToObsidian'
+		: generalSettings.saveBehavior;
+
+	dropdown.value = initialValue;
+	if (initialValue !== generalSettings.saveBehavior) {
+		void saveSettings({ ...generalSettings, saveBehavior: initialValue });
+	}
+
+	dropdown.addEventListener('change', () => {
+		const newValue = dropdown.value as Settings['saveBehavior'];
+		saveSettings({ saveBehavior: newValue });
+	});
 }
 
 export function resetDefaultTemplate(): void {
