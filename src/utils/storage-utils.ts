@@ -1,11 +1,13 @@
 import browser from './browser-polyfill';
-import { Settings, ModelConfig, PropertyType, HistoryEntry, Provider, Rating } from '../types/types';
+import { Settings, ModelConfig, PropertyType, HistoryEntry, Provider, Rating, LocalVaultBinding, SaveBehavior } from '../types/types';
 import { debugLog } from './debug';
+import { getLocalVaultBindingsFromStorage } from './local-vault-storage';
 
 export type { Settings, ModelConfig, PropertyType, HistoryEntry, Provider, Rating };
 
 export let generalSettings: Settings = {
 	vaults: [],
+	localVaultBindings: {},
 	betaFeatures: false,
 	legacyMode: false,
 	silentOpen: false,
@@ -42,6 +44,7 @@ export let generalSettings: Settings = {
 		addToObsidian: 0,
 		saveFile: 0,
 		copyToClipboard: 0,
+		saveToLocalFolder: 0,
 		share: 0,
 		readerMode: 0
 	},
@@ -65,9 +68,10 @@ interface StorageData {
 		legacyMode?: boolean;
 		silentOpen?: boolean;
 		openBehavior?: boolean | 'popup' | 'embedded';
-		saveBehavior?: 'addToObsidian' | 'copyToClipboard' | 'saveFile';
+		saveBehavior?: SaveBehavior;
 	};
 	vaults?: string[];
+	local_vault_bindings?: Record<string, LocalVaultBinding>;
 	highlighter_settings?: {
 		highlighterEnabled?: boolean;
 		alwaysShowHighlights?: boolean;
@@ -103,6 +107,7 @@ interface StorageData {
 		addToObsidian: number;
 		saveFile: number;
 		copyToClipboard: number;
+		saveToLocalFolder: number;
 		share: number;
 		readerMode?: number;
 	};
@@ -114,11 +119,15 @@ interface StorageData {
 const CURRENT_MIGRATION_VERSION = 1;
 
 export async function loadSettings(): Promise<Settings> {
-	const data = await browser.storage.sync.get(null) as StorageData;
+	const [data, localVaultBindings] = await Promise.all([
+		browser.storage.sync.get(null) as Promise<StorageData>,
+		getLocalVaultBindingsFromStorage(),
+	]);
 	
 	// Load default settings first
 	const defaultSettings: Settings = {
 		vaults: [],
+		localVaultBindings: {},
 		showMoreActionsButton: false,
 		betaFeatures: false,
 		legacyMode: false,
@@ -156,6 +165,7 @@ export async function loadSettings(): Promise<Settings> {
 			addToObsidian: 0,
 			saveFile: 0,
 			copyToClipboard: 0,
+			saveToLocalFolder: 0,
 			share: 0,
 			readerMode: 0
 		},
@@ -181,6 +191,7 @@ export async function loadSettings(): Promise<Settings> {
 	// Load user settings
 	const loadedSettings: Settings = {
 		vaults: sanitizedVaults.length > 0 ? sanitizedVaults : defaultSettings.vaults,
+		localVaultBindings,
 		showMoreActionsButton: data.general_settings?.showMoreActionsButton ?? defaultSettings.showMoreActionsButton,
 		betaFeatures: data.general_settings?.betaFeatures ?? defaultSettings.betaFeatures,
 		legacyMode: data.general_settings?.legacyMode ?? defaultSettings.legacyMode,
@@ -273,6 +284,9 @@ export async function saveSettings(settings?: Partial<Settings>): Promise<void> 
 			customCss: generalSettings.readerSettings.customCss
 		},
 		stats: generalSettings.stats
+	});
+	await browser.storage.local.set({
+		local_vault_bindings: generalSettings.localVaultBindings,
 	});
 }
 
