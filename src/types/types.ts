@@ -48,7 +48,12 @@ export interface Rating {
 	date: string;
 }
 
-export type SaveBehavior = 'addToObsidian' | 'saveFile' | 'copyToClipboard';
+export interface LocalVaultBinding {
+	folderName: string;
+	configuredAt: string;
+}
+
+export type SaveBehavior = 'addToObsidian' | 'saveFile' | 'copyToClipboard' | 'saveToLocalFolder';
 
 export interface ReaderSettings {
 	fontSize: number;
@@ -70,6 +75,7 @@ export interface ReaderSettings {
 
 export interface Settings {
 	vaults: string[];
+	localVaultBindings: Record<string, LocalVaultBinding>;
 	showMoreActionsButton: boolean;
 	betaFeatures: boolean;
 	legacyMode: boolean;
@@ -90,12 +96,13 @@ export interface Settings {
 		addToObsidian: number;
 		saveFile: number;
 		copyToClipboard: number;
+		saveToLocalFolder: number;
 		share: number;
 		readerMode: number;
 	};
 	history: HistoryEntry[];
 	ratings: Rating[];
-	saveBehavior: 'addToObsidian' | 'saveFile' | 'copyToClipboard';
+	saveBehavior: SaveBehavior;
 }
 
 export interface ModelConfig {
@@ -109,7 +116,7 @@ export interface ModelConfig {
 export interface HistoryEntry {
 	datetime: string;
 	url: string;
-	action: 'addToObsidian' | 'saveFile' | 'copyToClipboard' | 'share' | 'readerMode';
+	action: 'addToObsidian' | 'saveFile' | 'copyToClipboard' | 'saveToLocalFolder' | 'share' | 'readerMode';
 	title?: string;
 	vault?: string;
 	path?: string;

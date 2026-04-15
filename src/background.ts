@@ -10,6 +10,7 @@ import { hasStoredHighlights } from './utils/url-utils';
 
 const YOUTUBE_EMBED_RULE_ID = 9001;
 const YOUTUBE_INNERTUBE_RULE_ID = 9002;
+const SELECTION_CLIP_REQUEST_KEY = 'selection_clip_request';
 
 // Chrome: declarativeNetRequest to rewrite Referer on YouTube embeds.
 // Safari/Firefox use the native video element instead (see reader.ts).
@@ -316,6 +317,39 @@ async function initialize() {
 	} catch (error) {
 		console.error('Error initializing background script:', error);
 	}
+}
+
+function escapeHtml(value: string): string {
+	return value
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#039;');
+}
+
+async function cacheSelectionClipRequest(tabId: number, info: browser.Menus.OnClickData): Promise<void> {
+	let selectedHtml = '';
+
+	try {
+		await ensureContentScriptLoadedInBackground(tabId);
+		const response = await browser.tabs.sendMessage(tabId, { action: 'captureSelectionSnapshot' }) as { selectedHtml?: string };
+		selectedHtml = response?.selectedHtml || '';
+	} catch (error) {
+		console.warn('Failed to capture rich selection snapshot, falling back to plain text selection.', error);
+	}
+
+	if (!selectedHtml && info.selectionText) {
+		selectedHtml = `<p>${escapeHtml(info.selectionText)}</p>`;
+	}
+
+	await browser.storage.local.set({
+		[SELECTION_CLIP_REQUEST_KEY]: {
+			tabId,
+			selectedHtml,
+			createdAt: Date.now(),
+		}
+	});
 }
 
 // Check if a popup is open for a given tab
@@ -869,6 +903,11 @@ const debouncedUpdateContextMenu = debounce(async (tabId: number) => {
 					contexts: ["page", "selection", "image", "video", "audio"]
 				},
 				{
+					id: 'clip-selection-as-note',
+					title: browser.i18n.getMessage('clipSelectionAsNewNote') || 'Clip selection as new note',
+					contexts: ['selection']
+				},
+				{
 					id: 'copy-markdown-to-clipboard',
 					title: browser.i18n.getMessage('copyToClipboard'),
 					contexts: ["page", "selection"]
@@ -921,6 +960,9 @@ const debouncedUpdateContextMenu = debounce(async (tabId: number) => {
 
 browser.contextMenus.onClicked.addListener(async (info, tab) => {
 	if (info.menuItemId === "open-obsidian-clipper") {
+		openPopup();
+	} else if (info.menuItemId === 'clip-selection-as-note' && tab && tab.id) {
+		await cacheSelectionClipRequest(tab.id, info);
 		openPopup();
 	} else if (info.menuItemId === "enter-highlighter" && tab && tab.id) {
 		await setHighlighterMode(tab.id, true);
