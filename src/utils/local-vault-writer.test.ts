@@ -1,5 +1,14 @@
 import { describe, expect, test } from 'vitest';
-import { LocalVaultWriteError, mergeNoteContent, saveToLocalVault, splitFrontmatter, splitVaultPath } from './local-vault-writer';
+import {
+	buildFallbackLocalVaultFileName,
+	buildLocalVaultFileName,
+	LocalVaultWriteError,
+	mergeNoteContent,
+	sanitizeFileSystemAccessName,
+	saveToLocalVault,
+	splitFrontmatter,
+	splitVaultPath
+} from './local-vault-writer';
 
 class FakeWritableFileStream {
 	private readonly commit: (content: string) => void;
@@ -59,6 +68,8 @@ class FakeDirectoryHandle {
 	}
 
 	async getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<FakeDirectoryHandle> {
+		this.assertAllowedName(name);
+
 		const existing = this.directories.get(name);
 		if (existing) {
 			return existing;
@@ -72,6 +83,8 @@ class FakeDirectoryHandle {
 	}
 
 	async getFileHandle(name: string, options?: { create?: boolean }): Promise<FakeFileHandle> {
+		this.assertAllowedName(name);
+
 		if (this.files.has(name)) {
 			return new FakeFileHandle(
 				() => this.files.get(name) || '',
@@ -88,6 +101,20 @@ class FakeDirectoryHandle {
 		}
 
 		throw new DOMException('File not found', 'NotFoundError');
+	}
+
+	private assertAllowedName(name: string): void {
+		const byteLength = new TextEncoder().encode(name).length;
+		if (
+			!name
+			|| name === '.'
+			|| name === '..'
+			|| /[<>:"\/\\|?*\x00-\x1F\x7F-\x9F]/.test(name)
+			|| /[\uD800-\uDFFF]/.test(name)
+			|| byteLength > 180
+		) {
+			throw new TypeError('Name is not allowed.');
+		}
 	}
 }
 
@@ -129,6 +156,55 @@ describe('splitVaultPath', () => {
 	test('removes empty and traversal-like segments', () => {
 		expect(splitVaultPath('/Articles//2026/./../Drafts/')).toEqual(['Articles', '2026', 'Drafts']);
 	});
+
+	test('removes File System Access forbidden characters from path segments', () => {
+		expect(splitVaultPath('/Articles/X\\Posts/2026/')).toEqual(['Articles', 'XPosts', '2026']);
+	});
+});
+
+describe('sanitizeFileSystemAccessName', () => {
+	test('removes names rejected by File System Access handles', () => {
+		expect(sanitizeFileSystemAccessName('X post \\ article: "quoted"?')).toBe('X post article quoted');
+	});
+
+	test('falls back when the sanitized handle name is empty', () => {
+		expect(sanitizeFileSystemAccessName('\\')).toBe('Untitled');
+	});
+
+	test('truncates by UTF-8 byte length for multibyte titles', () => {
+		const sanitized = sanitizeFileSystemAccessName('标题'.repeat(120));
+		expect(new TextEncoder().encode(sanitized).length).toBeLessThanOrEqual(180);
+	});
+
+	test('removes lone surrogate characters left by character-based truncation', () => {
+		expect(sanitizeFileSystemAccessName('Article \uD83D')).toBe('Article');
+	});
+});
+
+describe('buildLocalVaultFileName', () => {
+	test('builds a Chrome-safe markdown filename from long multibyte names', () => {
+		const fileName = buildLocalVaultFileName('标题'.repeat(120));
+		expect(fileName.endsWith('.md')).toBe(true);
+		expect(new TextEncoder().encode(fileName).length).toBeLessThanOrEqual(180);
+	});
+
+	test('does not duplicate an existing markdown extension', () => {
+		expect(buildLocalVaultFileName('Clip.md')).toBe('Clip.md');
+	});
+
+	test('sanitizes the X article title that Chrome rejected', () => {
+		expect(buildLocalVaultFileName('"三省六部幻觉：为什么\\"虚拟公司\\"式多Agent架构在工程上不成立"')).toBe(
+			'三省六部幻觉为什么虚拟公司式多Agent架构在工程上不成立.md'
+		);
+	});
+});
+
+describe('buildFallbackLocalVaultFileName', () => {
+	test('builds an ASCII fallback filename', () => {
+		const fileName = buildFallbackLocalVaultFileName('"三省六部幻觉：为什么\\"虚拟公司\\"式多Agent架构在工程上不成立"');
+		expect(fileName).toMatch(/^Agent-[a-z0-9]+\.md$/);
+		expect(new TextEncoder().encode(fileName).length).toBeLessThanOrEqual(100);
+	});
 });
 
 describe('saveToLocalVault', () => {
@@ -147,6 +223,43 @@ describe('saveToLocalVault', () => {
 
 		expect(root.directories.get('Articles')?.directories.get('Inbox')?.files.get('Clip Note.md')).toBe(
 			'---\ntitle: Test\n---\nBody'
+		);
+	});
+
+	test('sanitizes note names before passing them to File System Access', async () => {
+		const root = new FakeDirectoryHandle('Vault');
+
+		await saveToLocalVault({
+			fileContent: 'Body',
+			noteName: 'X post \\ article',
+			path: 'Articles/X\\Posts',
+			vault: 'Main Vault',
+			behavior: 'create',
+		}, {
+			getVaultHandle: async () => root as unknown as FileSystemDirectoryHandle,
+		});
+
+		expect(root.directories.get('Articles')?.directories.get('XPosts')?.files.get('X post article.md')).toBe(
+			'Body'
+		);
+	});
+
+	test('saves long multibyte note names using a byte-limited local filename', async () => {
+		const root = new FakeDirectoryHandle('Vault');
+
+		await saveToLocalVault({
+			fileContent: 'Body',
+			noteName: '标题'.repeat(120),
+			path: '',
+			vault: 'Main Vault',
+			behavior: 'create',
+		}, {
+			getVaultHandle: async () => root as unknown as FileSystemDirectoryHandle,
+		});
+
+		expect(Array.from(root.files.keys())).toHaveLength(1);
+		expect(root.files.values().next().value).toBe(
+			'Body'
 		);
 	});
 
@@ -224,6 +337,23 @@ describe('saveToLocalVault', () => {
 			path: '',
 			vault: 'Main Vault',
 			behavior: 'create',
+		}, {
+			getVaultHandle: async () => root as unknown as FileSystemDirectoryHandle,
+		})).rejects.toMatchObject({
+			code: 'permission-denied',
+		});
+	});
+
+	test('throws without prompting when non-interactive save has only prompt permission', async () => {
+		const root = new FakeDirectoryHandle('Vault', 'prompt');
+
+		await expect(saveToLocalVault({
+			fileContent: 'Body',
+			noteName: 'Clip',
+			path: '',
+			vault: 'Main Vault',
+			behavior: 'create',
+			allowPermissionPrompt: false,
 		}, {
 			getVaultHandle: async () => root as unknown as FileSystemDirectoryHandle,
 		})).rejects.toMatchObject({

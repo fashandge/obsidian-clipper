@@ -80,6 +80,7 @@ export interface Settings {
 	betaFeatures: boolean;
 	legacyMode: boolean;
 	silentOpen: boolean;
+	autoSaveLocalFolderOnOpen: boolean;
 	openBehavior: 'popup' | 'embedded' | 'reader';
 	highlighterEnabled: boolean;
 	alwaysShowHighlights: boolean;
