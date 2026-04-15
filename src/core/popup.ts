@@ -24,7 +24,7 @@ import { saveFile } from '../utils/file-utils';
 import { translatePage, getMessage, setupLanguageAndDirection } from '../utils/i18n';
 import { formatPropertyValue } from '../utils/shared';
 import { LocalVaultWriteError, saveToLocalVault } from '../utils/local-vault-writer';
-import { isChromeLocalVaultWriteSupported } from '../utils/local-vault-storage';
+import { getStoredLocalVaultHandle, isChromeLocalVaultWriteSupported } from '../utils/local-vault-storage';
 
 interface ReaderModeResponse {
 	success: boolean;
@@ -39,6 +39,9 @@ let currentTabId: number | undefined;
 let lastSelectedVault: string | null = null;
 let canUseChromeLocalVaultWrites = false;
 let forcedSelectedHtml: string | null = null;
+let shouldAutoSaveLocalFolderOnOpen = false;
+let hasScheduledAutoSaveLocalFolder = false;
+const localVaultHandleCache = new Map<string, FileSystemDirectoryHandle>();
 
 const isSidePanel = window.location.pathname.includes('side-panel.html');
 const urlParams = new URLSearchParams(window.location.search);
@@ -261,6 +264,23 @@ async function loadPendingSelectionClipRequest(tabId: number): Promise<void> {
 	await browser.storage.local.remove('selection_clip_request');
 }
 
+async function preloadLocalVaultHandles(): Promise<void> {
+	localVaultHandleCache.clear();
+
+	await Promise.all(
+		Object.keys(loadedSettings.localVaultBindings).map(async (vaultName) => {
+			try {
+				const handle = await getStoredLocalVaultHandle(vaultName);
+				if (handle) {
+					localVaultHandleCache.set(vaultName, handle);
+				}
+			} catch (error) {
+				console.warn(`Failed to preload local vault handle for "${vaultName}"`, error);
+			}
+		})
+	);
+}
+
 function setupStorageListeners() {
 	browser.storage.local.onChanged.addListener((changes) => {
 		if (changes.highlights) {
@@ -329,8 +349,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 		const tab = await getTabInfo(currentTabId);
 		const currentBrowser = await detectBrowser();
 		canUseChromeLocalVaultWrites = currentBrowser === 'chrome' && isChromeLocalVaultWriteSupported();
+		if (canUseChromeLocalVaultWrites) {
+			await preloadLocalVaultHandles();
+		}
 		const isMobile = currentBrowser === 'mobile-safari';
 		await loadPendingSelectionClipRequest(currentTabId);
+		shouldAutoSaveLocalFolderOnOpen = canUseChromeLocalVaultWrites
+			&& loadedSettings.autoSaveLocalFolderOnOpen
+			&& loadedSettings.saveBehavior === 'saveToLocalFolder'
+			&& !isSidePanel
+			&& !isIframe;
 
 		const openBehavior: Settings['openBehavior'] = isMobile && loadedSettings.openBehavior !== 'reader' ? 'popup' : loadedSettings.openBehavior;
 
@@ -423,6 +451,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 				// Initial content load
 				await refreshFields(currentTabId);
+				scheduleAutoSaveLocalFolderIfNeeded();
 			} catch (error) {
 				console.error('Error initializing popup:', error);
 				showError(getMessage('pleaseReload'));
@@ -646,6 +675,33 @@ function showError(messageKey: string): void {
 		document.body.classList.add('has-error');
 	}
 }
+
+function showInlineNotice(messageKey: string): void {
+	if (document.body.classList.contains('has-error')) {
+		return;
+	}
+
+	const errorMessage = document.querySelector('.error-message') as HTMLElement;
+	if (errorMessage) {
+		errorMessage.textContent = getMessage(messageKey);
+		errorMessage.style.display = 'flex';
+		document.body.classList.add('has-inline-notice');
+	}
+}
+
+function clearInlineNotice(): void {
+	if (document.body.classList.contains('has-error')) {
+		return;
+	}
+
+	const errorMessage = document.querySelector('.error-message') as HTMLElement;
+	if (errorMessage) {
+		errorMessage.style.display = 'none';
+		errorMessage.textContent = '';
+	}
+	document.body.classList.remove('has-inline-notice');
+}
+
 function clearError(): void {
 	const errorMessage = document.querySelector('.error-message') as HTMLElement;
 	const clipper = document.querySelector('.clipper') as HTMLElement;
@@ -655,6 +711,7 @@ function clearError(): void {
 		clipper.style.display = 'block';
 
 		document.body.classList.remove('has-error');
+		document.body.classList.remove('has-inline-notice');
 	}
 }
 
@@ -1327,6 +1384,7 @@ function getLocalVaultErrorMessageKey(error: unknown): string {
 }
 
 function runPopupAction(action: () => void | Promise<void>): void {
+	clearInlineNotice();
 	Promise.resolve(action()).catch((error) => {
 		console.error('Popup action failed:', error);
 	});
@@ -1355,6 +1413,54 @@ function resolveSelectedVault(vaultDropdown: HTMLSelectElement): string {
 	}
 
 	return '';
+}
+
+async function primeLocalVaultPermission(vaultName: string, allowPermissionPrompt: boolean): Promise<void> {
+	if (!vaultName) {
+		throw new LocalVaultWriteError('missing-vault', 'Choose a vault before saving to a local folder.');
+	}
+
+	const handle = localVaultHandleCache.get(vaultName);
+	if (!handle) {
+		throw new LocalVaultWriteError(
+			'missing-binding',
+			'This vault is not connected to a local folder yet. Choose a folder in settings first.'
+		);
+	}
+
+	const currentPermission = handle.queryPermission
+		? await handle.queryPermission({ mode: 'readwrite' })
+		: 'prompt';
+	if (currentPermission === 'granted') {
+		return;
+	}
+
+	if (!allowPermissionPrompt || !handle.requestPermission) {
+		throw new LocalVaultWriteError(
+			'permission-denied',
+			'Chrome needs an explicit click before it can restore write access to this vault folder. Click Save again or reconnect the folder in settings.'
+		);
+	}
+
+	let requestedPermission: PermissionState;
+	try {
+		requestedPermission = await handle.requestPermission({ mode: 'readwrite' });
+	} catch (error) {
+		if (error instanceof DOMException && error.name === 'SecurityError') {
+			throw new LocalVaultWriteError(
+				'permission-denied',
+				'Chrome needs an explicit click before it can restore write access to this vault folder. Click Save again or reconnect the folder in settings.'
+			);
+		}
+		throw error;
+	}
+
+	if (requestedPermission !== 'granted') {
+		throw new LocalVaultWriteError(
+			'permission-denied',
+			'Chrome can no longer write to this vault folder. Reconnect the folder in settings and try again.'
+		);
+	}
 }
 
 function determineMainAction() {
@@ -1474,6 +1580,28 @@ async function finalizeClipSuccess(selectedVault: string, path: string): Promise
 	}
 }
 
+function scheduleAutoSaveLocalFolderIfNeeded(): void {
+	if (!shouldAutoSaveLocalFolderOnOpen || hasScheduledAutoSaveLocalFolder) {
+		return;
+	}
+	if (document.body.classList.contains('has-error')) {
+		return;
+	}
+
+	hasScheduledAutoSaveLocalFolder = true;
+	window.setTimeout(() => {
+		clearInlineNotice();
+		handleClipToLocalFolder({ allowPermissionPrompt: false, showErrors: false }).catch((error) => {
+			if (error instanceof LocalVaultWriteError && error.code === 'permission-denied') {
+				showInlineNotice('autoSaveLocalFolderNeedsClick');
+				return;
+			}
+			console.error('Auto-save local-folder clip failed:', error);
+			showInlineNotice(getLocalVaultErrorMessageKey(error));
+		});
+	}, 1000);
+}
+
 async function handleClipObsidian(): Promise<void> {
 	if (!currentTemplate) return;
 
@@ -1496,10 +1624,22 @@ async function handleClipObsidian(): Promise<void> {
 	}
 }
 
-async function handleClipToLocalFolder(): Promise<void> {
+async function handleClipToLocalFolder(
+	{
+		allowPermissionPrompt = true,
+		showErrors = true,
+	}: { allowPermissionPrompt?: boolean; showErrors?: boolean } = {}
+): Promise<void> {
 	if (!currentTemplate) return;
 
 	try {
+		const vaultDropdown = document.getElementById('vault-select') as HTMLSelectElement;
+		const selectedVault = resolveSelectedVault(vaultDropdown);
+		const isDailyNote = currentTemplate.behavior === 'append-daily' || currentTemplate.behavior === 'prepend-daily';
+		if (!isDailyNote) {
+			await primeLocalVaultPermission(selectedVault, allowPermissionPrompt);
+		}
+
 		const saveData = await prepareClipSaveData();
 		if (saveData.isDailyNote) {
 			await saveToObsidian(
@@ -1521,13 +1661,18 @@ async function handleClipToLocalFolder(): Promise<void> {
 			path: saveData.path,
 			vault: saveData.selectedVault,
 			behavior: currentTemplate.behavior,
+			allowPermissionPrompt: false,
+		}, {
+			getVaultHandle: async (vaultName) => localVaultHandleCache.get(vaultName) || null,
 		});
 		const tabInfo = await getCurrentTabInfo();
 		await incrementStat('saveToLocalFolder', saveData.selectedVault, saveData.path, tabInfo.url, tabInfo.title);
 		await finalizeClipSuccess(saveData.selectedVault, saveData.path);
 	} catch (error) {
 		console.error('Error in handleClipToLocalFolder:', error);
-		showError(getLocalVaultErrorMessageKey(error));
+		if (showErrors) {
+			showError(getLocalVaultErrorMessageKey(error));
+		}
 		throw error;
 	}
 }

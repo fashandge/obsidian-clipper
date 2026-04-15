@@ -15,6 +15,7 @@ describe('storage-utils local vault bindings', () => {
 			vaults: ['Main Vault'],
 			general_settings: {
 				saveBehavior: 'saveToLocalFolder',
+				autoSaveLocalFolderOnOpen: true,
 			},
 		});
 		(browser.storage.local.get as any).mockResolvedValue({
@@ -29,6 +30,7 @@ describe('storage-utils local vault bindings', () => {
 		const settings = await loadSettings();
 
 		expect(settings.saveBehavior).toBe('saveToLocalFolder');
+		expect(settings.autoSaveLocalFolderOnOpen).toBe(true);
 		expect(settings.localVaultBindings['Main Vault']).toEqual({
 			folderName: 'ObsidianVault',
 			configuredAt: '2026-04-14T00:00:00.000Z',
@@ -48,6 +50,7 @@ describe('storage-utils local vault bindings', () => {
 			betaFeatures: false,
 			legacyMode: false,
 			silentOpen: false,
+			autoSaveLocalFolderOnOpen: true,
 			openBehavior: 'popup',
 			highlighterEnabled: true,
 			alwaysShowHighlights: false,
@@ -92,6 +95,7 @@ describe('storage-utils local vault bindings', () => {
 			vaults: ['Main Vault'],
 			general_settings: expect.objectContaining({
 				saveBehavior: 'saveToLocalFolder',
+				autoSaveLocalFolderOnOpen: true,
 			}),
 		}));
 		expect(browser.storage.local.set).toHaveBeenCalledWith({

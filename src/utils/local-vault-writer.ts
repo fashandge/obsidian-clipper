@@ -1,6 +1,6 @@
 import { Template } from '../types/types';
-import { sanitizeFileName } from './string-utils';
 import { getStoredLocalVaultHandle } from './local-vault-storage';
+import { normalizeTitleForFileName } from './title-normalizer';
 
 export class LocalVaultWriteError extends Error {
 	code: string;
@@ -20,6 +20,9 @@ const defaultDependencies: LocalVaultWriterDependencies = {
 	getVaultHandle: getStoredLocalVaultHandle,
 };
 
+const LOCAL_HANDLE_NAME_MAX_BYTES = 180;
+const MARKDOWN_EXTENSION = '.md';
+
 export function splitFrontmatter(content: string): { frontmatter: string; body: string } {
 	if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
 		return { frontmatter: '', body: content };
@@ -38,6 +41,116 @@ export function splitFrontmatter(content: string): { frontmatter: string; body: 
 
 function normalizeSectionBreaks(content: string): string {
 	return content.replace(/^\n+/, '').replace(/\n+$/, '');
+}
+
+function removeUnpairedSurrogates(value: string): string {
+	let result = '';
+
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		const isHighSurrogate = code >= 0xD800 && code <= 0xDBFF;
+		const isLowSurrogate = code >= 0xDC00 && code <= 0xDFFF;
+
+		if (isHighSurrogate) {
+			const nextCode = value.charCodeAt(index + 1);
+			if (nextCode >= 0xDC00 && nextCode <= 0xDFFF) {
+				result += value[index] + value[index + 1];
+				index += 1;
+			}
+			continue;
+		}
+
+		if (!isLowSurrogate) {
+			result += value[index];
+		}
+	}
+
+	return result;
+}
+
+function truncateUtf8Bytes(value: string, maxBytes: number): string {
+	const encoder = new TextEncoder();
+	let result = '';
+	let byteLength = 0;
+
+	for (const char of value) {
+		const charByteLength = encoder.encode(char).length;
+		if (byteLength + charByteLength > maxBytes) {
+			break;
+		}
+		result += char;
+		byteLength += charByteLength;
+	}
+
+	return result;
+}
+
+export function sanitizeFileSystemAccessName(
+	name: string,
+	fallback = 'Untitled',
+	maxBytes = LOCAL_HANDLE_NAME_MAX_BYTES
+): string {
+	let sanitized = removeUnpairedSurrogates(name.normalize('NFKC'))
+		.replace(/[<>:"\/\\|?*\x00-\x1F\x7F-\x9F]/g, '')
+		.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
+		.replace(/\s+/g, ' ')
+		.replace(/^[.\s]+/, '')
+		.replace(/[.\s]+$/, '')
+		.trim();
+
+	sanitized = truncateUtf8Bytes(sanitized, maxBytes)
+		.replace(/[.\s]+$/, '')
+		.trim();
+
+	if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(sanitized)) {
+		sanitized = `_${sanitized}`;
+		sanitized = truncateUtf8Bytes(sanitized, maxBytes).replace(/[.\s]+$/, '').trim();
+	}
+
+	if (!sanitized || sanitized === '.' || sanitized === '..') {
+		return fallback;
+	}
+
+	return sanitized;
+}
+
+export function buildLocalVaultFileName(noteName: string): string {
+	const rawName = noteName || 'Untitled';
+	const withoutMarkdownExtension = rawName.toLowerCase().endsWith(MARKDOWN_EXTENSION)
+		? rawName.slice(0, -MARKDOWN_EXTENSION.length)
+		: rawName;
+	const normalizedName = normalizeTitleForFileName(withoutMarkdownExtension);
+	const sanitizedBaseName = sanitizeFileSystemAccessName(
+		normalizedName,
+		'Untitled',
+		LOCAL_HANDLE_NAME_MAX_BYTES - MARKDOWN_EXTENSION.length
+	);
+
+	return `${sanitizedBaseName}${MARKDOWN_EXTENSION}`;
+}
+
+function stableHash(value: string): string {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < value.length; index += 1) {
+		hash ^= value.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(36);
+}
+
+export function buildFallbackLocalVaultFileName(noteName: string): string {
+	const asciiBaseName = sanitizeFileSystemAccessName(noteName || 'Untitled', 'Untitled', 80)
+		.normalize('NFKD')
+		.replace(/[^\w .-]/g, '')
+		.replace(/\s+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	const baseName = asciiBaseName || 'Untitled';
+
+	return `${sanitizeFileSystemAccessName(`${baseName}-${stableHash(noteName || 'Untitled')}`, 'Untitled', 96)}${MARKDOWN_EXTENSION}`;
+}
+
+function isHandleNameError(error: unknown): boolean {
+	return error instanceof TypeError && /name is not allowed/i.test(error.message);
 }
 
 export function mergeNoteContent(
@@ -76,7 +189,8 @@ export function splitVaultPath(path: string): string[] {
 	return path
 		.split('/')
 		.map((segment) => segment.trim())
-		.filter((segment) => segment !== '' && segment !== '.' && segment !== '..');
+		.map((segment) => sanitizeFileSystemAccessName(segment, ''))
+		.filter((segment) => segment !== '');
 }
 
 async function getNestedDirectoryHandle(
@@ -123,17 +237,37 @@ async function readExistingFile(
 	}
 }
 
-async function ensureReadWritePermission(handle: FileSystemDirectoryHandle): Promise<void> {
+async function ensureReadWritePermission(
+	handle: FileSystemDirectoryHandle,
+	{ allowPermissionPrompt = true }: { allowPermissionPrompt?: boolean } = {}
+): Promise<void> {
 	const currentPermission = handle.queryPermission
 		? await handle.queryPermission({ mode: 'readwrite' })
 		: 'prompt';
 	if (currentPermission === 'granted') {
 		return;
 	}
+	if (!allowPermissionPrompt) {
+		throw new LocalVaultWriteError(
+			'permission-denied',
+			'Chrome needs an explicit click before it can restore write access to this vault folder. Click Save again or reconnect the folder in settings.'
+		);
+	}
 
-	const requestedPermission = handle.requestPermission
-		? await handle.requestPermission({ mode: 'readwrite' })
-		: 'prompt';
+	let requestedPermission: PermissionState | 'prompt' = 'prompt';
+	try {
+		requestedPermission = handle.requestPermission
+			? await handle.requestPermission({ mode: 'readwrite' })
+			: 'prompt';
+	} catch (error) {
+		if (error instanceof DOMException && error.name === 'SecurityError') {
+			throw new LocalVaultWriteError(
+				'permission-denied',
+				'Chrome needs an explicit click before it can restore write access to this vault folder. Click Save again or reconnect the folder in settings.'
+			);
+		}
+		throw error;
+	}
 	if (requestedPermission !== 'granted') {
 		throw new LocalVaultWriteError(
 			'permission-denied',
@@ -148,6 +282,30 @@ export interface SaveToLocalVaultParams {
 	path: string;
 	vault: string;
 	behavior: Template['behavior'];
+	allowPermissionPrompt?: boolean;
+}
+
+async function writeMarkdownFile(
+	directoryHandle: FileSystemDirectoryHandle,
+	fileName: string,
+	params: SaveToLocalVaultParams
+): Promise<void> {
+	const existingContent = await readExistingFile(directoryHandle, fileName);
+	if (params.behavior === 'create' && existingContent !== null) {
+		throw new LocalVaultWriteError(
+			'file-exists',
+			'A note with this name already exists in the selected local folder.'
+		);
+	}
+
+	const nextContent = existingContent === null
+		? params.fileContent
+		: mergeNoteContent(params.behavior, existingContent, params.fileContent);
+
+	const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+	const writable = await fileHandle.createWritable();
+	await writable.write(nextContent);
+	await writable.close();
 }
 
 export async function saveToLocalVault(
@@ -170,28 +328,20 @@ export async function saveToLocalVault(
 		);
 	}
 
-	await ensureReadWritePermission(vaultHandle);
+	await ensureReadWritePermission(vaultHandle, {
+		allowPermissionPrompt: params.allowPermissionPrompt ?? true,
+	});
 
 	const directoryHandle = await getNestedDirectoryHandle(vaultHandle, splitVaultPath(params.path));
-	const sanitizedFileName = sanitizeFileName(params.noteName || 'Untitled');
-	const fileName = sanitizedFileName.toLowerCase().endsWith('.md')
-		? sanitizedFileName
-		: `${sanitizedFileName}.md`;
-
-	const existingContent = await readExistingFile(directoryHandle, fileName);
-	if (params.behavior === 'create' && existingContent !== null) {
-		throw new LocalVaultWriteError(
-			'file-exists',
-			'A note with this name already exists in the selected local folder.'
-		);
+	const fileName = buildLocalVaultFileName(params.noteName);
+	try {
+		await writeMarkdownFile(directoryHandle, fileName, params);
+	} catch (error) {
+		const fallbackFileName = buildFallbackLocalVaultFileName(params.noteName);
+		if (isHandleNameError(error) && fallbackFileName !== fileName) {
+			await writeMarkdownFile(directoryHandle, fallbackFileName, params);
+			return;
+		}
+		throw error;
 	}
-
-	const nextContent = existingContent === null
-		? params.fileContent
-		: mergeNoteContent(params.behavior, existingContent, params.fileContent);
-
-	const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-	const writable = await fileHandle.createWritable();
-	await writable.write(nextContent);
-	await writable.close();
 }

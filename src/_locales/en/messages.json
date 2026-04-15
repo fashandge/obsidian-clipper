@@ -912,6 +912,15 @@
 	"searchHighlightsPlaceholder": {
 		"message": "Search highlights…"
 	},
+	"autoSaveLocalFolderOnOpen": {
+		"message": "Auto-save local-folder clips after opening popup"
+	},
+	"autoSaveLocalFolderOnOpenDescription": {
+		"message": "Chrome-only. When Save behavior is set to Save to local folder, the popup will automatically save the current clip after a short delay."
+	},
+	"autoSaveLocalFolderNeedsClick": {
+		"message": "Auto-save is waiting for a click because Chrome wants you to confirm folder access again. Click Save to local folder once."
+	},
 	"searchVariables": {
 		"message": "Search variables..."
 	},
