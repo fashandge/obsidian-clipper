@@ -3,8 +3,11 @@ import { detectBrowser } from './utils/browser-detection';
 import { updateCurrentActiveTab, isValidUrl, isBlankPage, isNormalPageUrl } from './utils/active-tab-manager';
 import { TextHighlightData } from './utils/highlighter';
 import { debounce } from './utils/debounce';
-import { Settings } from './types/types';
+import { Settings, Template } from './types/types';
 import { debugLog } from './utils/debug';
+import { LocalVaultWriteError, saveToLocalVault } from './utils/local-vault-writer';
+import { getStoredLocalVaultHandle } from './utils/local-vault-storage';
+import { incrementStat } from './utils/storage-utils';
 
 const YOUTUBE_EMBED_RULE_ID = 9001;
 const YOUTUBE_INNERTUBE_RULE_ID = 9002;
@@ -645,6 +648,54 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 					.catch((error) => sendResponse({success: false, error: error instanceof Error ? error.message : String(error)}));
 				return true;
 			}
+		}
+
+		if (typedRequest.action === "saveToLocalVaultFolder") {
+			// The File System Access commit (writable.close) can stall for many
+			// seconds on synced folders (e.g. iCloud). Doing it here in the
+			// persistent service worker lets the popup close immediately instead
+			// of blocking on the write. The popup does not await completion, so
+			// any error is recorded for the next popup open to surface.
+			const payload = (typedRequest as any).payload as {
+				fileContent: string;
+				noteName: string;
+				path: string;
+				vault: string;
+				behavior: Template['behavior'];
+				statAction: keyof Settings['stats'];
+				url?: string;
+				title?: string;
+			};
+			saveToLocalVault({
+				fileContent: payload.fileContent,
+				noteName: payload.noteName,
+				path: payload.path,
+				vault: payload.vault,
+				behavior: payload.behavior,
+				allowPermissionPrompt: false,
+			}, {
+				getVaultHandle: getStoredLocalVaultHandle,
+			}).then(async () => {
+				await incrementStat(payload.statAction, payload.vault, payload.path, payload.url, payload.title);
+				try {
+					await browser.storage.local.remove('local_vault_last_error');
+				} catch {
+					// ignore — best-effort cleanup of a stale error
+				}
+				sendResponse({ success: true });
+			}).catch(async (error) => {
+				console.error('Background local-vault save failed:', error);
+				const code = error instanceof LocalVaultWriteError ? error.code : 'unknown';
+				try {
+					await browser.storage.local.set({
+						local_vault_last_error: { code, at: new Date().toISOString() },
+					});
+				} catch {
+					// ignore — best-effort error surfacing
+				}
+				sendResponse({ success: false, code });
+			});
+			return true;
 		}
 
 		if (typedRequest.action === "getTabInfo") {

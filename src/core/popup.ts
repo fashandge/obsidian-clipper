@@ -23,7 +23,7 @@ import { sanitizeFileName } from '../utils/string-utils';
 import { saveFile } from '../utils/file-utils';
 import { translatePage, getMessage, setupLanguageAndDirection } from '../utils/i18n';
 import { formatPropertyValue } from '../utils/shared';
-import { LocalVaultWriteError, saveToLocalVault } from '../utils/local-vault-writer';
+import { LocalVaultWriteError } from '../utils/local-vault-writer';
 import { getStoredLocalVaultHandle, isChromeLocalVaultWriteSupported } from '../utils/local-vault-storage';
 
 interface ReaderModeResponse {
@@ -456,7 +456,12 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 				// Initial content load
 				await refreshFields(currentTabId);
-				scheduleAutoSaveLocalFolderIfNeeded();
+				// If the previous background save failed, surface it now and skip
+				// auto-saving this time so a failing write doesn't retry silently.
+				const hadPendingLocalVaultError = await surfacePendingLocalVaultError();
+				if (!hadPendingLocalVaultError) {
+					scheduleAutoSaveLocalFolderIfNeeded();
+				}
 			} catch (error) {
 				console.error('Error initializing popup:', error);
 				showError(getMessage('pleaseReload'));
@@ -1367,25 +1372,47 @@ async function handleSaveToDownloads() {
 	}
 }
 
+function localVaultErrorMessageKeyForCode(code: string): string {
+	switch (code) {
+		case 'missing-vault':
+			return 'localVaultErrorMissingVault';
+		case 'missing-binding':
+			return 'localVaultErrorMissingBinding';
+		case 'permission-denied':
+			return 'localVaultErrorPermissionDenied';
+		case 'file-exists':
+			return 'localVaultErrorFileExists';
+		case 'daily-notes-unsupported':
+			return 'localVaultErrorUnsupportedDaily';
+		default:
+			return 'failedToSaveLocalFolderFile';
+	}
+}
+
 function getLocalVaultErrorMessageKey(error: unknown): string {
 	if (error instanceof LocalVaultWriteError) {
-		switch (error.code) {
-			case 'missing-vault':
-				return 'localVaultErrorMissingVault';
-			case 'missing-binding':
-				return 'localVaultErrorMissingBinding';
-			case 'permission-denied':
-				return 'localVaultErrorPermissionDenied';
-			case 'file-exists':
-				return 'localVaultErrorFileExists';
-			case 'daily-notes-unsupported':
-				return 'localVaultErrorUnsupportedDaily';
-			default:
-				return 'failedToSaveLocalFolderFile';
-		}
+		return localVaultErrorMessageKeyForCode(error.code);
 	}
 
 	return 'failedToSaveLocalFolderFile';
+}
+
+// A background (service-worker) local-folder save reports failures back through
+// storage because the popup that triggered it has already closed. Surface any
+// such error on the next popup open and return whether one was shown.
+async function surfacePendingLocalVaultError(): Promise<boolean> {
+	try {
+		const result = await browser.storage.local.get('local_vault_last_error');
+		const stored = result.local_vault_last_error as { code?: string } | undefined;
+		if (!stored || !stored.code) {
+			return false;
+		}
+		await browser.storage.local.remove('local_vault_last_error');
+		showInlineNotice(localVaultErrorMessageKeyForCode(stored.code));
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function runPopupAction(action: () => void | Promise<void>): void {
@@ -1660,18 +1687,28 @@ async function handleClipToLocalFolder(
 			return;
 		}
 
-		await saveToLocalVault({
-			fileContent: saveData.fileContent,
-			noteName: saveData.noteName,
-			path: saveData.path,
-			vault: saveData.selectedVault,
-			behavior: currentTemplate.behavior,
-			allowPermissionPrompt: false,
-		}, {
-			getVaultHandle: async (vaultName) => localVaultHandleCache.get(vaultName) || null,
-		});
+		// Hand the actual write off to the background service worker. The
+		// File System Access commit (writable.close) can stall for many seconds
+		// on synced folders such as iCloud; running it in the persistent worker
+		// lets the popup close immediately instead of blocking on it. Permission
+		// and binding errors are already surfaced by primeLocalVaultPermission
+		// above while the popup is still open, so we don't await completion here.
 		const tabInfo = await getCurrentTabInfo();
-		await incrementStat('saveToLocalFolder', saveData.selectedVault, saveData.path, tabInfo.url, tabInfo.title);
+		browser.runtime.sendMessage({
+			action: 'saveToLocalVaultFolder',
+			payload: {
+				fileContent: saveData.fileContent,
+				noteName: saveData.noteName,
+				path: saveData.path,
+				vault: saveData.selectedVault,
+				behavior: currentTemplate.behavior,
+				statAction: 'saveToLocalFolder',
+				url: tabInfo.url,
+				title: tabInfo.title,
+			},
+		}).catch((error) => {
+			console.error('Failed to hand off local-vault save to background:', error);
+		});
 		await finalizeClipSuccess(saveData.selectedVault, saveData.path);
 	} catch (error) {
 		console.error('Error in handleClipToLocalFolder:', error);
