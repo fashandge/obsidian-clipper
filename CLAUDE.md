@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex, OpenClaw, H
 
 ## Project
 
-Obsidian Web Clipper — a browser extension (Chrome, Firefox, Safari) that clips web pages into Obsidian. Source is TypeScript under `src/`, bundled with webpack. This checkout is a local fork of the upstream Obsidian repo with personal patches on top (local-vault saves, selection clipping, auto-save).
+Obsidian Web Clipper — a browser extension (Chrome, Firefox, Safari) that clips web pages into Obsidian. Source is TypeScript under `src/`, bundled with webpack. This checkout is a local fork of the upstream Obsidian repo with personal patches on top (local-vault saves, selection clipping, auto-save). Those fork-specific features are documented in `docs/design/fork-additions.md` — read it before touching the local-folder save flow, the selection context menu, or the background-worker write offload.
 
 ## Git workflow
 
