@@ -104,11 +104,16 @@ async function getCurrentTabInfo(): Promise<{ url: string; title?: string }> {
 	
 	try {
 		const tab = await getTabInfo(currentTabId);
-		// Try to get the title from the extracted content if available
-		const extractedData = await memoizedExtractPageContent(currentTabId);
-		return { 
-			url: tab.url, 
-			title: extractedData?.title || document.title 
+		// Reuse the title already extracted at popup init rather than
+		// re-extracting the whole page here. extractPageContent is memoized but
+		// its cache expires; on heavier pages the memo is already stale by the
+		// time a clip finishes, so awaiting it would trigger a second full
+		// extraction that blocks the popup from closing for several seconds —
+		// even though the clip itself has already been saved.
+		const title = currentVariables['{{title}}'] || undefined;
+		return {
+			url: tab.url,
+			title,
 		};
 	} catch (error) {
 		console.warn('Failed to get current tab info for stats:', error);
