@@ -12,7 +12,7 @@ import { saveFile } from './utils/file-utils';
 import { debugLog } from './utils/debug';
 import { updateSidebarWidth, addResizeHandle, cleanupResizeHandlers } from './utils/iframe-resize';
 import { parseForClip } from './utils/clip-utils';
-import { extractXPost } from './utils/x-post-extractor';
+import { extractXPost, isXStatusUrl } from './utils/x-post-extractor';
 
 declare global {
 	interface Window {
@@ -238,15 +238,18 @@ declare global {
 				const defuddled = await Promise.race([defuddle.parseAsync(), parseTimeout])
 					.catch(() => defuddle.parse());
 
-				// Fork-local override for X's new lightweight markup (article[data-tweet-id]),
-				// which defuddle's TwitterExtractor no longer matches — without this the
-				// generic reader collapses the tweet's pre-wrap newlines into one dense
-				// paragraph. Only kicks in for that markup; classic X pages are untouched.
+				// Fork-local override for X status pages when defuddle fell back to its
+				// generic reader (no site-specific extractorType) — without this the
+				// generic reader collapses the tweet's newlines into one dense paragraph.
+				// Gated on `!extractorType` so a working defuddle TwitterExtractor is
+				// never clobbered; handles both the classic and new X markup variants.
 				let xPost = null;
-				try {
-					xPost = extractXPost(document, document.URL);
-				} catch (e) {
-					debugLog('Clipper', 'X post extraction failed, using defuddle output', e);
+				if (!defuddled.extractorType && isXStatusUrl(document.URL)) {
+					try {
+						xPost = extractXPost(document, document.URL);
+					} catch (e) {
+						debugLog('Clipper', 'X post extraction failed, using defuddle output', e);
+					}
 				}
 				if (xPost) {
 					defuddled.content = xPost.content;

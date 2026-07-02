@@ -22,7 +22,7 @@ around it (a selection context-menu, auto-save on open).
 | "Clip selection as new note" context menu | Right-click menu | `background.ts`, `content.ts`, `core/popup.ts` |
 | Auto-save to local folder on popup open | `autoSaveLocalFolderOnOpen` setting | `core/popup.ts` |
 | Background-worker write offload (perf) | `saveToLocalVaultFolder` message | `background.ts`, `core/popup.ts` |
-| X/Twitter new-markup extractor | `getPageContent` handler | `utils/x-post-extractor.ts`, `content.ts` |
+| X/Twitter post extractor (both markups) | `getPageContent` handler | `utils/x-post-extractor.ts`, `content.ts` |
 
 ---
 
@@ -200,46 +200,52 @@ closed. This is an accepted trade-off for making the popup responsive.
 
 ---
 
-## 5. X/Twitter new-markup extractor
+## 5. X/Twitter post extractor
 
 ### Problem
 
-`defuddle` ships a `TwitterExtractor` that keys off X's classic React SPA markup
-(`article[data-testid="tweet"]`, `[data-testid="tweetText"]`,
-`[data-testid="User-Name"]`, …). X has begun serving a different, Tailwind-based
-lightweight web front-end whose tweets are `article[data-tweet-id]` elements with
-`white-space: pre-wrap` text nodes and **no `data-testid` attributes at all**
-(verified on live status pages, including logged-in sessions).
+X serves (at least) **two different web front-ends** for a tweet, chosen by
+session/rollout (observed: logged-out → new, logged-in → classic — not
+guaranteed):
 
-On that markup `TwitterExtractor.canExtract()` returns false, so defuddle falls
-back to its **generic reader**, which (a) scrapes the surrounding UI chrome
-(`View quotes`, `Post your reply`, engagement counts) and (b) collapses the
-tweet's CSS-preserved newlines — they are real `\n` characters made visible only
-by `white-space: pre-wrap`, with no `<br>`/`<p>` — into a single dense,
-unreadable paragraph. The HTML→Markdown step doesn't consult CSS, so significant
-whitespace is lost.
+1. **Classic** React SPA — `article[data-testid="tweet"]`,
+   `[data-testid="tweetText"]`, `[data-testid="User-Name"]`, `css-*` classes.
+   Line breaks are real `\n` inside `<span>`s (no `<br>`/`<p>`).
+2. **New** lightweight Tailwind page — `article[data-tweet-id]`,
+   `white-space: pre-wrap` text nodes, **no `data-testid` at all**. Line breaks
+   are real `\n` made visible only by the pre-wrap CSS.
+
+`defuddle` ships a `TwitterExtractor` that only understands markup (1). On markup
+(2) its `canExtract()` returns false; and on markup (1) it sometimes still does
+not run in this extension's pipeline. Whenever no site-specific extractor runs,
+defuddle falls back to its **generic reader**, which (a) scrapes surrounding UI
+chrome (`View quotes`, `Post your reply`, engagement counts) and (b) collapses
+the tweet's `\n` line breaks — insignificant to HTML flow, significant only via
+CSS the Markdown step never sees — into a single dense, unreadable paragraph.
 
 ### Solution — `utils/x-post-extractor.ts`
 
-A fork-local extractor that mirrors defuddle's `TwitterExtractor` output but reads
-the new markup:
+A fork-local extractor that reads **both** markups and mirrors defuddle's
+`TwitterExtractor` output:
 
-- `isNewXPostPage(doc, url)` gates it: the URL must be a `/status/<id>` page, the
-  classic `data-testid` markup must be **absent** (so defuddle keeps handling old
-  pages), and an `article[data-tweet-id]` must be present.
 - `extractXPost(doc, url)` returns an override `{ content, title, author, site,
-  description, published?, extractedContent }` or `null`. It splits the tweet
-  text on `\n` into `<p>` paragraphs (the core fix), upgrades media images to
-  `&name=large`, classifies self-replies by the main author as an appended thread
-  (`<hr>`-separated) and other authors' replies into a `## Replies` blockquote
-  section, and follows nested `article[data-tweet-id]` for quoted tweets.
+  description, published?, extractedContent }` or `null`. It picks the markup
+  (`article[data-tweet-id]` → new path, else `article[data-testid="tweet"]` →
+  classic path), splits the tweet text on `\n` into `<p>` paragraphs (**the core
+  fix**), keeps emoji `<img alt>` as inline text, upgrades media images to
+  `&name=large`, and classifies self-replies by the main author as an appended
+  thread (`<hr>`-separated) with other authors' replies in a `## Replies`
+  blockquote section.
+- `isXStatusUrl(url)` / `isNewXPostPage(doc, url)` are helpers for gating/tests.
 
-`content.ts`'s `getPageContent` handler runs `extractXPost` **after** the normal
-`defuddle` parse and, when it matches, overrides `defuddled.content/title/author/
-site/description/published/variables`. This keeps all other metadata (favicon,
-image, schemaOrgData, wordCount) from defuddle and is a no-op on every non-X page
-and on classic-markup X pages. Failures are caught and fall back to defuddle's
-output.
+`content.ts`'s `getPageContent` handler runs `extractXPost` **only when defuddle
+produced no `extractorType`** (i.e. it fell back to the generic reader) on an X
+status URL, then overrides `defuddled.content/title/author/site/description/
+published/variables`. Gating on `!extractorType` guarantees a *working* defuddle
+`TwitterExtractor` is never clobbered, while still rescuing every case where
+defuddle fell back — regardless of which markup X served. All other metadata
+(favicon, image, schemaOrgData, wordCount) stays from defuddle, and a try/catch
+falls back to defuddle's output on any error.
 
 This is **not** browser-gated — it helps X clips on Chrome, Firefox, and Safari.
 Because defuddle's `ExtractorRegistry` is not exported from the package's public
