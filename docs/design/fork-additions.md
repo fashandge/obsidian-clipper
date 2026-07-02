@@ -22,6 +22,7 @@ around it (a selection context-menu, auto-save on open).
 | "Clip selection as new note" context menu | Right-click menu | `background.ts`, `content.ts`, `core/popup.ts` |
 | Auto-save to local folder on popup open | `autoSaveLocalFolderOnOpen` setting | `core/popup.ts` |
 | Background-worker write offload (perf) | `saveToLocalVaultFolder` message | `background.ts`, `core/popup.ts` |
+| X/Twitter new-markup extractor | `getPageContent` handler | `utils/x-post-extractor.ts`, `content.ts` |
 
 ---
 
@@ -199,12 +200,59 @@ closed. This is an accepted trade-off for making the popup responsive.
 
 ---
 
+## 5. X/Twitter new-markup extractor
+
+### Problem
+
+`defuddle` ships a `TwitterExtractor` that keys off X's classic React SPA markup
+(`article[data-testid="tweet"]`, `[data-testid="tweetText"]`,
+`[data-testid="User-Name"]`, …). X has begun serving a different, Tailwind-based
+lightweight web front-end whose tweets are `article[data-tweet-id]` elements with
+`white-space: pre-wrap` text nodes and **no `data-testid` attributes at all**
+(verified on live status pages, including logged-in sessions).
+
+On that markup `TwitterExtractor.canExtract()` returns false, so defuddle falls
+back to its **generic reader**, which (a) scrapes the surrounding UI chrome
+(`View quotes`, `Post your reply`, engagement counts) and (b) collapses the
+tweet's CSS-preserved newlines — they are real `\n` characters made visible only
+by `white-space: pre-wrap`, with no `<br>`/`<p>` — into a single dense,
+unreadable paragraph. The HTML→Markdown step doesn't consult CSS, so significant
+whitespace is lost.
+
+### Solution — `utils/x-post-extractor.ts`
+
+A fork-local extractor that mirrors defuddle's `TwitterExtractor` output but reads
+the new markup:
+
+- `isNewXPostPage(doc, url)` gates it: the URL must be a `/status/<id>` page, the
+  classic `data-testid` markup must be **absent** (so defuddle keeps handling old
+  pages), and an `article[data-tweet-id]` must be present.
+- `extractXPost(doc, url)` returns an override `{ content, title, author, site,
+  description, published?, extractedContent }` or `null`. It splits the tweet
+  text on `\n` into `<p>` paragraphs (the core fix), upgrades media images to
+  `&name=large`, classifies self-replies by the main author as an appended thread
+  (`<hr>`-separated) and other authors' replies into a `## Replies` blockquote
+  section, and follows nested `article[data-tweet-id]` for quoted tweets.
+
+`content.ts`'s `getPageContent` handler runs `extractXPost` **after** the normal
+`defuddle` parse and, when it matches, overrides `defuddled.content/title/author/
+site/description/published/variables`. This keeps all other metadata (favicon,
+image, schemaOrgData, wordCount) from defuddle and is a no-op on every non-X page
+and on classic-markup X pages. Failures are caught and fall back to defuddle's
+output.
+
+This is **not** browser-gated — it helps X clips on Chrome, Firefox, and Safari.
+Because defuddle's `ExtractorRegistry` is not exported from the package's public
+entry points, the override lives in the extension rather than being registered as
+a defuddle extractor.
+
 ## Files added by the fork
 
 ```
 src/utils/local-vault-storage.ts      IndexedDB handle storage + permission helpers
 src/utils/local-vault-writer.ts       saveToLocalVault + filename/merge logic
 src/utils/title-normalizer.ts         filename title normalization
+src/utils/x-post-extractor.ts         X/Twitter new-markup extractor (+ .test.ts)
 src/types/file-system-access.d.ts     ambient types for the File System Access API
 src/utils/local-vault-writer.test.ts  writer unit tests
 src/utils/storage-utils.test.ts       settings/stat tests
@@ -215,7 +263,8 @@ docs/design/fork-additions.md         this document
 Notably touched upstream files: `core/popup.ts` (save flow, auto-save, selection
 clip, permission priming), `background.ts` (context menu, selection snapshot
 cache, `saveToLocalVaultFolder` offload), `managers/general-settings.ts` (bind /
-reconnect / clear folder UI), `types/types.ts`, and the locale catalogs.
+reconnect / clear folder UI), `content.ts` (X new-markup extractor override),
+`types/types.ts`, and the locale catalogs.
 
 ## Browser support
 
