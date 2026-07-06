@@ -142,6 +142,23 @@ iframe, the popup saves automatically shortly after it opens.
   to `prompt`, the save throws `permission-denied` and the popup shows the
   `autoSaveLocalFolderNeedsClick` inline notice asking for one manual click.
 
+### Auto-save ignores incidental page selections
+
+The clipper's normal rule is "if the page has a text selection, clip just that
+selection" — `refreshFields` (`popup.ts`) prefers the selection over the
+full-page content, and `initializePageContent` swaps the whole note body for it.
+That is the right behavior for a *manual* clip, but for auto-save-on-open the
+user's intent is "save the whole page", so a stray selection left on the page
+(e.g. a double-click that selected a sidebar date) must not silently hijack the
+body. When `shouldAutoSaveLocalFolderOnOpen` is true, `refreshFields` therefore
+ignores the page's own `selectedHtml`; only an **explicit** "Clip selection as
+new note" request (§2, via `forcedSelectedHtml`) still overrides the body.
+
+Defensively, `content.ts`'s `getPageContent` handler also only treats a
+selection as real when it is non-collapsed and carries trimmed text (mirroring
+`captureSelectionSnapshot`) — a collapsed caret reports `rangeCount > 0` but
+must not count as a selection.
+
 ---
 
 ## 4. Background-worker write offload (performance)
