@@ -797,7 +797,13 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 		const extractedData = await extractionPromise;
 		if (extractedData) {
 			const currentUrl = tab.url;
-			const selectedHtml = forcedSelectedHtml ?? extractedData.selectedHtml;
+			// When auto-save-on-open is armed, the user's intent is "save the whole
+			// page", so an incidental page selection (e.g. a stray double-click that
+			// left the date/sidebar text selected) must NOT hijack the note body.
+			// An explicit "Clip selection as new note" request still wins via
+			// forcedSelectedHtml.
+			const selectedHtml = forcedSelectedHtml
+				?? (shouldAutoSaveLocalFolderOnOpen ? '' : extractedData.selectedHtml);
 
 			const initializedContent = await initializePageContent(
 				extractedData.content,
