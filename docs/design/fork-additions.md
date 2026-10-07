@@ -23,6 +23,7 @@ around it (a selection context-menu, auto-save on open).
 | Auto-save to local folder on popup open | `autoSaveLocalFolderOnOpen` setting | `core/popup.ts` |
 | Background-worker write offload (perf) | `saveToLocalVaultFolder` message | `background.ts`, `core/popup.ts` |
 | X/Twitter post extractor (both markups) | `getPageContent` handler | `utils/x-post-extractor.ts`, `content.ts` |
+| ChatGPT conversation extractor (2026 markup) | `getPageContent` handler | `utils/chatgpt-conversation-extractor.ts`, `content.ts` |
 
 ---
 
@@ -269,6 +270,62 @@ Because defuddle's `ExtractorRegistry` is not exported from the package's public
 entry points, the override lives in the extension rather than being registered as
 a defuddle extractor.
 
+## 6. ChatGPT conversation extractor
+
+### Problem
+
+defuddle's `ChatGPTExtractor` (still true in defuddle 0.19.4) only matches the
+old markup: `article[data-testid^="conversation-turn-"]` turns holding
+`[data-message-author-role]` messages. ChatGPT's current web app (observed
+2026-10) has neither:
+
+- turns are `[data-turn-key]` blocks;
+- each message is a `[data-content-search-unit-key="fallback-turn-N:i:<role>"]`
+  unit, with a localized sr-only heading ("You said:" sits *beside* the user
+  unit; "ChatGPT said:" is `h4[data-conversation-role]` inside the assistant one);
+- the assistant body is `[data-markdown-text-style="assistant-message"]`, in one
+  of two shapes: **classic Markdown** (semantic tags, sources as
+  `a[data-testid="chatgpt-citation"]` pills) or a **generative-UI layout**
+  (`data-d-component="title|text|list|table|box|grid|badge|…"`, with bold/italic
+  carried by `data-d-default-strong`, `data-d-weight`, `data-d-font-style`, and
+  sources as href-less favicon badges).
+
+With no extractor matching, defuddle's generic reader kept the user prompt but
+dropped the **entire assistant answer** on generative-UI pages (19 words for a
+~600-word answer): partial-selector and hidden-element removal strip it, and the
+retry passes don't recover it (the `removePartialSelectors: false` retry returned
+24 words, although the same option on a fresh document returns ~610).
+
+### Solution — `utils/chatgpt-conversation-extractor.ts`
+
+`extractChatGPTConversation(doc, url)` walks the top-level units in document
+order, clones each message body, and cleans the clone: removes buttons, SVGs,
+`[hidden]`/sr-only nodes and the "ChatGPT can make mistakes" footer; turns
+citation pills and source badges into footnotes (deduplicated by URL,
+`utm_source=chatgpt.com` stripped); converts the generative-UI emphasis
+attributes into `<strong>`/`<em>` and captions into italic paragraphs; keeps user
+prompt line breaks as `<br>`; and strips all styling attributes. The output
+mirrors defuddle's `ConversationExtractor` HTML (bold author header per message,
+`<hr>` between messages, footnotes section).
+
+Unlike `ConversationExtractor` it does **not** re-run defuddle over the
+assembled HTML: that pass's heuristics drop the assistant header and the
+answer's leading `<h1>`.
+
+`content.ts` applies it with the same gate as the X override — **only when
+defuddle produced no `extractorType`** on a `chatgpt.com/c/…`, `/g/…/c/…` or
+`/share/…` URL — and overrides `content/title/site/description/wordCount/
+variables` (`{{messageCount}}`). It returns `null` (keeping defuddle's output)
+when the page has no units or no assistant message yet.
+
+Like the X extractor this is not browser-gated.
+
+Known limits: the units must be in the DOM (they were for every conversation
+checked, up to 5 turns; a virtualized very long thread may not render every
+turn); generative-UI badges only expose the source's site, not the exact page,
+so their footnotes link to the site origin; chart-like rows (label + value)
+come out as separate lines.
+
 ## Files added by the fork
 
 ```
@@ -276,6 +333,7 @@ src/utils/local-vault-storage.ts      IndexedDB handle storage + permission help
 src/utils/local-vault-writer.ts       saveToLocalVault + filename/merge logic
 src/utils/title-normalizer.ts         filename title normalization
 src/utils/x-post-extractor.ts         X/Twitter new-markup extractor (+ .test.ts)
+src/utils/chatgpt-conversation-extractor.ts  ChatGPT 2026-markup extractor (+ .test.ts)
 src/types/file-system-access.d.ts     ambient types for the File System Access API
 src/utils/local-vault-writer.test.ts  writer unit tests
 src/utils/storage-utils.test.ts       settings/stat tests
@@ -286,7 +344,7 @@ docs/design/fork-additions.md         this document
 Notably touched upstream files: `core/popup.ts` (save flow, auto-save, selection
 clip, permission priming), `background.ts` (context menu, selection snapshot
 cache, `saveToLocalVaultFolder` offload), `managers/general-settings.ts` (bind /
-reconnect / clear folder UI), `content.ts` (X new-markup extractor override),
+reconnect / clear folder UI), `content.ts` (X and ChatGPT extractor overrides),
 `types/types.ts`, and the locale catalogs.
 
 ## Browser support

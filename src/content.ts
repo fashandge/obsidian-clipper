@@ -13,6 +13,7 @@ import { debugLog } from './utils/debug';
 import { updateSidebarWidth, addResizeHandle, cleanupResizeHandlers } from './utils/iframe-resize';
 import { parseForClip } from './utils/clip-utils';
 import { extractXPost, isXStatusUrl } from './utils/x-post-extractor';
+import { extractChatGPTConversation, isChatGPTConversationUrl } from './utils/chatgpt-conversation-extractor';
 
 declare global {
 	interface Window {
@@ -264,6 +265,27 @@ declare global {
 					defuddled.description = xPost.description;
 					if (xPost.published) defuddled.published = xPost.published;
 					defuddled.variables = { ...defuddled.variables, ...xPost.extractedContent };
+				}
+
+				// Fork-local override for ChatGPT conversations: defuddle's ChatGPT
+				// extractor only knows the old conversation-turn markup, and its generic
+				// fallback drops the assistant answers on the current markup. Same
+				// `!extractorType` gate as the X override above.
+				let chatGPT = null;
+				if (!defuddled.extractorType && isChatGPTConversationUrl(document.URL)) {
+					try {
+						chatGPT = extractChatGPTConversation(document, document.URL);
+					} catch (e) {
+						debugLog('Clipper', 'ChatGPT extraction failed, using defuddle output', e);
+					}
+				}
+				if (chatGPT) {
+					defuddled.content = chatGPT.content;
+					defuddled.title = chatGPT.title;
+					defuddled.site = chatGPT.site;
+					defuddled.description = chatGPT.description;
+					defuddled.wordCount = chatGPT.wordCount;
+					defuddled.variables = { ...defuddled.variables, ...chatGPT.extractedContent };
 				}
 
 				const extractedContent: { [key: string]: string } = {
