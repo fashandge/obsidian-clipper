@@ -3,7 +3,8 @@
 This document describes the features this fork (`fashandge/obsidian-clipper`)
 adds on top of the official `obsidianmd/obsidian-clipper`. It is a design /
 maintenance reference for those changes, not user-facing help. The official
-user docs live alongside this file in `docs/`.
+user docs are maintained upstream in the
+[obsidian-help repo](https://github.com/obsidianmd/obsidian-help/tree/master/en/Obsidian%20Web%20Clipper).
 
 ## Why this fork exists
 
