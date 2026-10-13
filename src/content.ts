@@ -12,6 +12,7 @@ import { saveFile } from './utils/file-utils';
 import { debugLog } from './utils/debug';
 import { updateSidebarWidth, addResizeHandle, cleanupResizeHandlers } from './utils/iframe-resize';
 import { parseForClip } from './utils/clip-utils';
+import { withShieldedContentAsync } from './utils/defuddle-guards';
 import { extractXPost, isXStatusUrl } from './utils/x-post-extractor';
 import { extractChatGPTConversation, isChatGPTConversationUrl } from './utils/chatgpt-conversation-extractor';
 
@@ -241,8 +242,9 @@ declare global {
 				const parseTimeout = new Promise<never>((_, reject) =>
 					setTimeout(() => reject(new Error('parseAsync timeout')), 8000)
 				);
-				const defuddled = await Promise.race([defuddle.parseAsync(), parseTimeout])
-					.catch(() => defuddle.parse());
+				const defuddled = await withShieldedContentAsync(document, () =>
+					Promise.race([defuddle.parseAsync(), parseTimeout])
+						.catch(() => defuddle.parse()));
 
 				// Fork-local override for X status pages when defuddle fell back to its
 				// generic reader (no site-specific extractorType) — without this the

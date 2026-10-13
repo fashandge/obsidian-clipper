@@ -30,6 +30,7 @@ import { getFontCss, isFontAvailable } from './font-utils';
 import { createMarkdownContent } from 'defuddle/full';
 import { saveFile } from './file-utils';
 import { parseForClip } from './clip-utils';
+import { withShieldedContentAsync } from './defuddle-guards';
 import { updateSidebarWidth, addResizeHandle, cleanupResizeHandlers } from './iframe-resize';
 import { setElementHTML, setSVGChildren, serializeChildren } from './dom-utils';
 
@@ -875,7 +876,7 @@ export class Reader {
 		}
 
 		const defuddle = new Defuddle(doc, { url: doc.URL });
-		const defuddled = await defuddle.parseAsync();
+		const defuddled = await withShieldedContentAsync(doc, () => defuddle.parseAsync());
 
 		return {
 			content: defuddled.content,

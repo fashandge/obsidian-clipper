@@ -25,6 +25,7 @@ around it (a selection context-menu, auto-save on open).
 | Background-worker write offload (perf) | `saveToLocalVaultFolder` message | `background.ts`, `core/popup.ts` |
 | X/Twitter post extractor (both markups) | `getPageContent` handler | `utils/x-post-extractor.ts`, `content.ts` |
 | ChatGPT conversation extractor (2026 markup) | `getPageContent` handler | `utils/chatgpt-conversation-extractor.ts`, `content.ts` |
+| Shield article bodies from defuddle's `[data-date]` clutter selector | every defuddle parse of the live page | `utils/defuddle-guards.ts`, `content.ts`, `utils/clip-utils.ts`, `utils/reader.ts` |
 
 ---
 
@@ -327,6 +328,24 @@ turn); generative-UI badges only expose the source's site, not the exact page,
 so their footnotes link to the site origin; chart-like rows (label + value)
 come out as separate lines.
 
+## 7. Defuddle `[data-date]` guard
+
+defuddle's exact clutter selectors include `[data-date]`, aimed at small date
+badges. Some themes put that attribute on the article body container itself —
+e.g. the Ghost theme on felixrieseberg.com renders
+`<div class="content gh-content" data-date="…">` — so defuddle removes the
+whole body on every retry pass and the clip has a title but no text. This is
+still the case in defuddle 0.19.5.
+
+`utils/defuddle-guards.ts` removes `data-date` from any element that is clearly
+a content container (it contains a `<p>` and at least 200 characters of text),
+runs the parse, then restores the attribute. It mutates the live DOM rather
+than a copy because defuddle clones the document itself and needs the live
+window for computed styles. Wrapped call sites: the `getPageContent` handler in
+`content.ts`, `parseForClip` in `utils/clip-utils.ts`, and reader mode in
+`utils/reader.ts`. Remove the guard once upstream defuddle stops matching
+content containers with that selector.
+
 ## Files added by the fork
 
 ```
@@ -335,6 +354,7 @@ src/utils/local-vault-writer.ts       saveToLocalVault + filename/merge logic
 src/utils/title-normalizer.ts         filename title normalization
 src/utils/x-post-extractor.ts         X/Twitter new-markup extractor (+ .test.ts)
 src/utils/chatgpt-conversation-extractor.ts  ChatGPT 2026-markup extractor (+ .test.ts)
+src/utils/defuddle-guards.ts          shields article bodies from defuddle's [data-date] selector (+ .test.ts)
 src/types/file-system-access.d.ts     ambient types for the File System Access API
 src/utils/local-vault-writer.test.ts  writer unit tests
 src/utils/storage-utils.test.ts       settings/stat tests
@@ -345,7 +365,7 @@ docs/design/fork-additions.md         this document
 Notably touched upstream files: `core/popup.ts` (save flow, auto-save, selection
 clip, permission priming), `background.ts` (context menu, selection snapshot
 cache, `saveToLocalVaultFolder` offload), `managers/general-settings.ts` (bind /
-reconnect / clear folder UI), `content.ts` (X and ChatGPT extractor overrides),
+reconnect / clear folder UI), `content.ts` (X and ChatGPT extractor overrides, defuddle guard),
 `types/types.ts`, and the locale catalogs.
 
 ## Browser support

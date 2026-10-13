@@ -1,5 +1,6 @@
 import Defuddle from 'defuddle/full';
 import { setElementHTML } from './dom-utils';
+import { withShieldedContent } from './defuddle-guards';
 
 // Parse document content for clipping. In reader mode, extracts from
 // the article's original HTML to avoid reader UI artifacts.
@@ -15,7 +16,7 @@ export function parseForClip(doc: Document) {
 				...Array.from(readerArticle.childNodes).map(n => readerDoc.importNode(n, true))
 			);
 		}
-		return new Defuddle(readerDoc, { url: '' }).parse();
+		return withShieldedContent(readerDoc, () => new Defuddle(readerDoc, { url: '' }).parse());
 	}
-	return new Defuddle(doc, { url: doc.URL }).parse();
+	return withShieldedContent(doc, () => new Defuddle(doc, { url: doc.URL }).parse());
 }
