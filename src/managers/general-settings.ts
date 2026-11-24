@@ -191,7 +191,7 @@ async function updateLocalVaultStatus(
 		return;
 	}
 
-	statusElement.textContent = getMessage('localVaultStatusConnected', [binding.folderName]);
+	statusElement.textContent = getMessage('localVaultStatusChecking');
 	chooseButton.style.display = 'none';
 	reconnectButton.style.display = 'inline-flex';
 	clearButton.style.display = 'inline-flex';

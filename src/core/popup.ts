@@ -23,7 +23,7 @@ import { sanitizeFileName } from '../utils/string-utils';
 import { saveFile } from '../utils/file-utils';
 import { translatePage, getMessage, setupLanguageAndDirection } from '../utils/i18n';
 import { formatPropertyValue } from '../utils/shared';
-import { LocalVaultWriteError } from '../utils/local-vault-writer';
+import { ensureReadWritePermission, LocalVaultWriteError } from '../utils/local-vault-writer';
 import { getStoredLocalVaultHandle, isChromeLocalVaultWriteSupported } from '../utils/local-vault-storage';
 
 interface ReaderModeResponse {
@@ -42,6 +42,7 @@ let forcedSelectedHtml: string | null = null;
 let shouldAutoSaveLocalFolderOnOpen = false;
 let hasScheduledAutoSaveLocalFolder = false;
 const localVaultHandleCache = new Map<string, FileSystemDirectoryHandle>();
+const unresponsiveVaultHandles = new Set<string>();
 
 const isSidePanel = window.location.pathname.includes('side-panel.html');
 const urlParams = new URLSearchParams(window.location.search);
@@ -280,6 +281,7 @@ async function loadPendingSelectionClipRequest(tabId: number): Promise<void> {
 
 async function preloadLocalVaultHandles(): Promise<void> {
 	localVaultHandleCache.clear();
+	unresponsiveVaultHandles.clear();
 
 	await Promise.all(
 		Object.keys(loadedSettings.localVaultBindings).map(async (vaultName) => {
@@ -1397,6 +1399,8 @@ function localVaultErrorMessageKeyForCode(code: string): string {
 			return 'localVaultErrorMissingBinding';
 		case 'permission-denied':
 			return 'localVaultErrorPermissionDenied';
+		case 'stale-handle':
+			return 'localVaultErrorStaleHandle';
 		case 'file-exists':
 			return 'localVaultErrorFileExists';
 		case 'daily-notes-unsupported':
@@ -1477,38 +1481,20 @@ async function primeLocalVaultPermission(vaultName: string, allowPermissionPromp
 		);
 	}
 
-	const currentPermission = handle.queryPermission
-		? await handle.queryPermission({ mode: 'readwrite' })
-		: 'prompt';
-	if (currentPermission === 'granted') {
-		return;
-	}
-
-	if (!allowPermissionPrompt || !handle.requestPermission) {
+	if (unresponsiveVaultHandles.has(vaultName)) {
 		throw new LocalVaultWriteError(
-			'permission-denied',
-			'Chrome needs an explicit click before it can restore write access to this vault folder. Click Save again or reconnect the folder in settings.'
+			'stale-handle',
+			'Chrome stopped responding for this saved vault folder (this can happen after a Chrome update). Open Settings and click Reconnect for your vault folder.'
 		);
 	}
 
-	let requestedPermission: PermissionState;
 	try {
-		requestedPermission = await handle.requestPermission({ mode: 'readwrite' });
+		await ensureReadWritePermission(handle, { allowPermissionPrompt });
 	} catch (error) {
-		if (error instanceof DOMException && error.name === 'SecurityError') {
-			throw new LocalVaultWriteError(
-				'permission-denied',
-				'Chrome needs an explicit click before it can restore write access to this vault folder. Click Save again or reconnect the folder in settings.'
-			);
+		if (error instanceof LocalVaultWriteError && error.code === 'stale-handle') {
+			unresponsiveVaultHandles.add(vaultName);
 		}
 		throw error;
-	}
-
-	if (requestedPermission !== 'granted') {
-		throw new LocalVaultWriteError(
-			'permission-denied',
-			'Chrome can no longer write to this vault folder. Reconnect the folder in settings and try again.'
-		);
 	}
 }
 

@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
 	buildFallbackLocalVaultFileName,
 	buildLocalVaultFileName,
+	ensureReadWritePermission,
 	LocalVaultWriteError,
 	mergeNoteContent,
 	sanitizeFileSystemAccessName,
@@ -9,6 +10,7 @@ import {
 	splitFrontmatter,
 	splitVaultPath
 } from './local-vault-writer';
+import { queryLocalVaultHandlePermission } from './local-vault-storage';
 
 class FakeWritableFileStream {
 	private readonly commit: (content: string) => void;
@@ -375,5 +377,59 @@ describe('saveToLocalVault', () => {
 		})).rejects.toMatchObject({
 			code: 'daily-notes-unsupported',
 		});
+	});
+
+	test('fails with stale-handle when queryPermission hangs indefinitely', async () => {
+		const requestPermission = vi.fn(() => new Promise<PermissionState>(() => {}));
+		const hangingHandle = {
+			kind: 'directory',
+			name: 'Vault',
+			queryPermission: () => new Promise<PermissionState>(() => {}),
+			requestPermission,
+		} as unknown as FileSystemDirectoryHandle;
+
+		await expect(saveToLocalVault({
+			fileContent: 'Body',
+			noteName: 'Clip',
+			path: '',
+			vault: 'Main Vault',
+			behavior: 'create',
+			allowPermissionPrompt: false,
+		}, {
+			getVaultHandle: async () => hangingHandle,
+			permissionQueryTimeoutMs: 15,
+		})).rejects.toMatchObject({
+			code: 'stale-handle',
+		});
+
+		await expect(ensureReadWritePermission(hangingHandle, {
+			allowPermissionPrompt: true,
+			permissionQueryTimeoutMs: 15,
+		})).rejects.toMatchObject({
+			code: 'stale-handle',
+		});
+
+		// Must not call requestPermission on an unresponsive handle (it also hangs in Chrome 158).
+		expect(requestPermission).not.toHaveBeenCalled();
+	});
+});
+
+describe('queryLocalVaultHandlePermission', () => {
+	test('returns unresponsive when queryPermission never settles', async () => {
+		const hangingHandle = {
+			kind: 'directory',
+			name: 'Vault',
+			queryPermission: () => new Promise<PermissionState>(() => {}),
+		} as unknown as FileSystemDirectoryHandle;
+
+		await expect(queryLocalVaultHandlePermission(hangingHandle, 'readwrite', 15)).resolves.toBe('unresponsive');
+	});
+
+	test('returns granted when queryPermission resolves before timeout', async () => {
+		const root = new FakeDirectoryHandle('Vault', 'granted');
+
+		await expect(
+			queryLocalVaultHandlePermission(root as unknown as FileSystemDirectoryHandle, 'readwrite', 50)
+		).resolves.toBe('granted');
 	});
 });

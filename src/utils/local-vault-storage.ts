@@ -3,6 +3,9 @@ import { LocalVaultBinding } from '../types/types';
 
 const LOCAL_VAULT_DB_NAME = 'obsidian-clipper-local-vaults';
 const LOCAL_VAULT_STORE_NAME = 'vault-handles';
+export const HANDLE_PERMISSION_QUERY_TIMEOUT_MS = 2500;
+
+export type LocalVaultPermissionQueryResult = PermissionState | 'unresponsive';
 
 interface StoredVaultHandle {
 	vaultName: string;
@@ -117,27 +120,63 @@ export async function deleteStoredLocalVaultHandle(vaultName: string): Promise<v
 	await withStore('readwrite', (store) => requestToPromise(store.delete(vaultName)));
 }
 
+/**
+ * Query permission on a stored File System Access handle with a timeout guard.
+ *
+ * Chrome 158+ can hang indefinitely (never resolving or rejecting) on every
+ * async method of a FileSystemDirectoryHandle serialized in IndexedDB before
+ * M158 (Chromium issues 587468319 / 588328253). Bounding queryPermission lets
+ * callers detect an unresponsive handle and direct the user to reconnect it
+ * instead of stalling auto-save, manual saves, and settings status checks.
+ */
+export async function queryLocalVaultHandlePermission(
+	handle: FileSystemDirectoryHandle,
+	mode: FileSystemPermissionMode = 'readwrite',
+	timeoutMs: number = HANDLE_PERMISSION_QUERY_TIMEOUT_MS
+): Promise<LocalVaultPermissionQueryResult> {
+	if (!handle.queryPermission) {
+		return 'prompt';
+	}
+
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			handle.queryPermission({ mode }),
+			new Promise<'unresponsive'>((resolve) => {
+				timeoutId = setTimeout(() => resolve('unresponsive'), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timeoutId !== undefined) {
+			clearTimeout(timeoutId);
+		}
+	}
+}
+
 export async function getLocalVaultPermissionState(
 	vaultName: string,
-	mode: FileSystemPermissionMode = 'readwrite'
-): Promise<PermissionState | 'missing'> {
+	mode: FileSystemPermissionMode = 'readwrite',
+	timeoutMs: number = HANDLE_PERMISSION_QUERY_TIMEOUT_MS
+): Promise<PermissionState | 'missing' | 'unresponsive'> {
 	const handle = await getStoredLocalVaultHandle(vaultName);
 	if (!handle) {
 		return 'missing';
 	}
-	if (!handle.queryPermission) {
-		return 'prompt';
-	}
-	return handle.queryPermission({ mode });
+	return queryLocalVaultHandlePermission(handle, mode, timeoutMs);
 }
 
 export async function requestLocalVaultPermission(
 	vaultName: string,
-	mode: FileSystemPermissionMode = 'readwrite'
-): Promise<PermissionState | 'missing'> {
+	mode: FileSystemPermissionMode = 'readwrite',
+	timeoutMs: number = HANDLE_PERMISSION_QUERY_TIMEOUT_MS
+): Promise<PermissionState | 'missing' | 'unresponsive'> {
 	const handle = await getStoredLocalVaultHandle(vaultName);
 	if (!handle) {
 		return 'missing';
+	}
+	const current = await queryLocalVaultHandlePermission(handle, mode, timeoutMs);
+	if (current === 'granted' || current === 'unresponsive') {
+		return current;
 	}
 	if (!handle.requestPermission) {
 		return 'prompt';
@@ -168,6 +207,11 @@ export async function chooseLocalVaultFolder(vaultName: string): Promise<LocalVa
 	}
 
 	await setStoredLocalVaultHandle(vaultName, handle);
+	try {
+		await browser.storage.local.remove('local_vault_last_error');
+	} catch {
+		// Best-effort cleanup so the next popup open can auto-save immediately.
+	}
 
 	const binding: LocalVaultBinding = {
 		folderName: handle.name,

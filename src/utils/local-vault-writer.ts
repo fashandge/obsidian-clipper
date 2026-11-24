@@ -1,5 +1,5 @@
 import { Template } from '../types/types';
-import { getStoredLocalVaultHandle } from './local-vault-storage';
+import { getStoredLocalVaultHandle, queryLocalVaultHandlePermission } from './local-vault-storage';
 import { normalizeTitleForFileName } from './title-normalizer';
 
 export class LocalVaultWriteError extends Error {
@@ -14,6 +14,7 @@ export class LocalVaultWriteError extends Error {
 
 export interface LocalVaultWriterDependencies {
 	getVaultHandle: (vaultName: string) => Promise<FileSystemDirectoryHandle | null>;
+	permissionQueryTimeoutMs?: number;
 }
 
 const defaultDependencies: LocalVaultWriterDependencies = {
@@ -237,15 +238,26 @@ async function readExistingFile(
 	}
 }
 
-async function ensureReadWritePermission(
+export async function ensureReadWritePermission(
 	handle: FileSystemDirectoryHandle,
-	{ allowPermissionPrompt = true }: { allowPermissionPrompt?: boolean } = {}
+	{
+		allowPermissionPrompt = true,
+		permissionQueryTimeoutMs,
+	}: { allowPermissionPrompt?: boolean; permissionQueryTimeoutMs?: number } = {}
 ): Promise<void> {
-	const currentPermission = handle.queryPermission
-		? await handle.queryPermission({ mode: 'readwrite' })
-		: 'prompt';
+	const currentPermission = await queryLocalVaultHandlePermission(
+		handle,
+		'readwrite',
+		permissionQueryTimeoutMs
+	);
 	if (currentPermission === 'granted') {
 		return;
+	}
+	if (currentPermission === 'unresponsive') {
+		throw new LocalVaultWriteError(
+			'stale-handle',
+			'Chrome stopped responding for this saved vault folder (this can happen after a Chrome update). Open Settings and click Reconnect for your vault folder.'
+		);
 	}
 	if (!allowPermissionPrompt) {
 		throw new LocalVaultWriteError(
@@ -330,6 +342,7 @@ export async function saveToLocalVault(
 
 	await ensureReadWritePermission(vaultHandle, {
 		allowPermissionPrompt: params.allowPermissionPrompt ?? true,
+		permissionQueryTimeoutMs: dependencies.permissionQueryTimeoutMs,
 	});
 
 	const directoryHandle = await getNestedDirectoryHandle(vaultHandle, splitVaultPath(params.path));

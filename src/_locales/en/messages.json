@@ -1055,6 +1055,9 @@
 	"localVaultErrorPermissionDenied": {
 		"message": "Chrome no longer has write access to this vault folder. Reconnect the folder in settings and try again."
 	},
+	"localVaultErrorStaleHandle": {
+		"message": "Chrome stopped responding for this saved vault folder (this can happen after a Chrome update). Open Settings and click Reconnect for your vault folder."
+	},
 	"localVaultErrorFileExists": {
 		"message": "A note with this name already exists in the selected local folder."
 	},

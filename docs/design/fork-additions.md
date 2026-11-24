@@ -70,6 +70,17 @@ restart). Restoring write access then needs a real user gesture, which is why
 permission handling is split into a "query" path (no gesture) and a "request"
 path (needs a click) — see the auto-save section.
 
+Chrome 158+ can also leave pre-M158 handles serialized in IndexedDB in a broken
+state where every async method (`queryPermission`, `requestPermission`, etc.)
+hangs indefinitely without resolving or rejecting (Chromium issues 587468319 /
+588328253). `queryLocalVaultHandlePermission` bounds `queryPermission` with a
+timeout (`HANDLE_PERMISSION_QUERY_TIMEOUT_MS`, 2.5s) and returns `'unresponsive'`
+so `ensureReadWritePermission` fails fast with `LocalVaultWriteError('stale-handle')`
+(never calling `requestPermission` on the hung handle), auto-save/manual saves
+surface `localVaultErrorStaleHandle` instead of stalling silently, and Settings
+reports `NeedsReconnect` instead of remaining stuck on "Connected". Reconnecting
+the folder via `showDirectoryPicker` replaces the stale IndexedDB handle.
+
 ### Writing the file — `utils/local-vault-writer.ts`
 
 `saveToLocalVault(params, deps)` is the core writer. Steps:
