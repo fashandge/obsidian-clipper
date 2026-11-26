@@ -1401,6 +1401,8 @@ function localVaultErrorMessageKeyForCode(code: string): string {
 			return 'localVaultErrorPermissionDenied';
 		case 'stale-handle':
 			return 'localVaultErrorStaleHandle';
+		case 'folder-not-found':
+			return 'localVaultErrorFolderNotFound';
 		case 'file-exists':
 			return 'localVaultErrorFileExists';
 		case 'daily-notes-unsupported':

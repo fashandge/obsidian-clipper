@@ -81,6 +81,21 @@ surface `localVaultErrorStaleHandle` instead of stalling silently, and Settings
 reports `NeedsReconnect` instead of remaining stuck on "Connected". Reconnecting
 the folder via `showDirectoryPicker` replaces the stale IndexedDB handle.
 
+A stored handle can also point to a directory that was later **deleted or moved**
+on disk (for example, if a subfolder was accidentally bound instead of the vault
+root and later cleaned up). Chrome's `queryPermission` only checks the saved
+permission grant and still returns `'granted'` for a missing directory, which
+previously caused Settings to claim "Connected" and the popup to offload doomed
+writes that failed in the background with `code: 'unknown'`.
+`probeLocalVaultDirectoryHandle` performs a non-mutating, timeout-bounded
+`handle.keys().next()` check after `queryPermission` succeeds: `NotFoundError`
+maps to `'not-found'` in Settings (`localVaultStatusFolderNotFound`) and
+`LocalVaultWriteError('folder-not-found')` in `ensureReadWritePermission` /
+`saveToLocalVault`, surfacing `localVaultErrorFolderNotFound` immediately while
+the popup is still open. `chooseLocalVaultFolder` also checks for `.obsidian`
+and vault-name mismatches and asks for confirmation before binding a subfolder
+instead of the vault root.
+
 ### Writing the file — `utils/local-vault-writer.ts`
 
 `saveToLocalVault(params, deps)` is the core writer. Steps:

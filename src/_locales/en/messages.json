@@ -1023,7 +1023,7 @@
 		"message": "Z to A"
 	},
 	"localVaultWritesDescription": {
-		"message": "Chrome-only: connect each vault to a local Obsidian folder to save Markdown directly without foregrounding Obsidian. The first connection opens a folder picker. Daily note templates still use Obsidian."
+		"message": "Chrome-only: connect each vault to its local Obsidian vault root folder (not a subfolder like raw/inbox — template note paths are created inside it) to save Markdown directly without foregrounding Obsidian. Daily note templates still use Obsidian."
 	},
 	"localVaultChooseFolder": {
 		"message": "Choose folder"
@@ -1043,8 +1043,20 @@
 	"localVaultStatusConnected": {
 		"message": "Connected to $1"
 	},
+	"localVaultStatusConnectedNameMismatch": {
+		"message": "Connected to $1 (does not match vault \"$2\" — make sure this is your vault root folder, not a subfolder)."
+	},
+	"localVaultStatusFolderNotFound": {
+		"message": "Connected folder \"$1\" was deleted or moved. Click Reconnect and select your vault root folder."
+	},
 	"localVaultStatusNeedsReconnect": {
 		"message": "Access to $1 needs to be reconnected."
+	},
+	"localVaultConfirmNotVaultRoot": {
+		"message": "The folder \"$1\" does not contain a .obsidian folder, so it may not be your vault root. Template note paths (like raw/inbox) are created inside the connected folder. Connect \"$1\" anyway?"
+	},
+	"localVaultConfirmNameMismatch": {
+		"message": "The selected folder \"$1\" does not match the vault name \"$2\". Template note paths are created inside this folder — normally you should pick the vault root folder itself. Connect \"$1\" anyway?"
 	},
 	"localVaultErrorMissingBinding": {
 		"message": "This vault is not connected to a local folder yet. Open settings and choose a folder first."
@@ -1057,6 +1069,9 @@
 	},
 	"localVaultErrorStaleHandle": {
 		"message": "Chrome stopped responding for this saved vault folder (this can happen after a Chrome update). Open Settings and click Reconnect for your vault folder."
+	},
+	"localVaultErrorFolderNotFound": {
+		"message": "The connected local vault folder was deleted or moved. Open Settings and click Reconnect to select your vault root folder."
 	},
 	"localVaultErrorFileExists": {
 		"message": "A note with this name already exists in the selected local folder."

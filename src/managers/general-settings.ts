@@ -144,7 +144,17 @@ export function removeVault(index: number): void {
 
 async function handleVaultFolderSelection(vault: string): Promise<void> {
 	try {
-		const binding = await chooseLocalVaultFolder(vault);
+		const binding = await chooseLocalVaultFolder(vault, {
+			confirmFolder: (reason, folderName, vaultName) => {
+				const message = reason === 'missing-obsidian-folder'
+					? getMessage('localVaultConfirmNotVaultRoot', [folderName])
+					: getMessage('localVaultConfirmNameMismatch', [folderName, vaultName]);
+				return window.confirm(message);
+			},
+		});
+		if (!binding) {
+			return;
+		}
 		await saveSettings({
 			...generalSettings,
 			localVaultBindings: {
@@ -154,6 +164,9 @@ async function handleVaultFolderSelection(vault: string): Promise<void> {
 		});
 		updateVaultList();
 	} catch (error) {
+		if (error instanceof DOMException && error.name === 'AbortError') {
+			return;
+		}
 		console.error(`Failed to select local folder for vault "${vault}"`, error);
 		alert(error instanceof Error ? error.message : getMessage('failedToSaveFile'));
 	}
@@ -199,11 +212,17 @@ async function updateLocalVaultStatus(
 	try {
 		const permission = await getLocalVaultPermissionState(vault);
 		if (permission === 'granted') {
-			statusElement.textContent = getMessage('localVaultStatusConnected', [binding.folderName]);
+			if (binding.folderName.toLowerCase() !== vault.toLowerCase()) {
+				statusElement.textContent = getMessage('localVaultStatusConnectedNameMismatch', [binding.folderName, vault]);
+			} else {
+				statusElement.textContent = getMessage('localVaultStatusConnected', [binding.folderName]);
+			}
 			return;
 		}
 		if (permission === 'missing') {
 			statusElement.textContent = getMessage('localVaultStatusMissing');
+		} else if (permission === 'not-found') {
+			statusElement.textContent = getMessage('localVaultStatusFolderNotFound', [binding.folderName]);
 		} else {
 			statusElement.textContent = getMessage('localVaultStatusNeedsReconnect', [binding.folderName]);
 		}

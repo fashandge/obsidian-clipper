@@ -1,5 +1,10 @@
 import { Template } from '../types/types';
-import { getStoredLocalVaultHandle, queryLocalVaultHandlePermission } from './local-vault-storage';
+import {
+	getStoredLocalVaultHandle,
+	isNotFoundDomError,
+	probeLocalVaultDirectoryHandle,
+	queryLocalVaultHandlePermission,
+} from './local-vault-storage';
 import { normalizeTitleForFileName } from './title-normalizer';
 
 export class LocalVaultWriteError extends Error {
@@ -194,6 +199,9 @@ export function splitVaultPath(path: string): string[] {
 		.filter((segment) => segment !== '');
 }
 
+const FOLDER_NOT_FOUND_MESSAGE =
+	'The connected local vault folder was deleted or moved. Open Settings and click Reconnect to select your vault root folder.';
+
 async function getNestedDirectoryHandle(
 	rootHandle: FileSystemDirectoryHandle,
 	segments: string[]
@@ -201,7 +209,14 @@ async function getNestedDirectoryHandle(
 	let currentHandle = rootHandle;
 
 	for (const segment of segments) {
-		currentHandle = await currentHandle.getDirectoryHandle(segment, { create: true });
+		try {
+			currentHandle = await currentHandle.getDirectoryHandle(segment, { create: true });
+		} catch (error) {
+			if (isNotFoundDomError(error)) {
+				throw new LocalVaultWriteError('folder-not-found', FOLDER_NOT_FOUND_MESSAGE);
+			}
+			throw error;
+		}
 	}
 
 	return currentHandle;
@@ -238,6 +253,28 @@ async function readExistingFile(
 	}
 }
 
+async function assertDirectoryHandleAccessible(
+	handle: FileSystemDirectoryHandle,
+	permissionQueryTimeoutMs?: number
+): Promise<void> {
+	const probe = await probeLocalVaultDirectoryHandle(handle, permissionQueryTimeoutMs);
+	if (probe === 'not-found') {
+		throw new LocalVaultWriteError('folder-not-found', FOLDER_NOT_FOUND_MESSAGE);
+	}
+	if (probe === 'unresponsive') {
+		throw new LocalVaultWriteError(
+			'stale-handle',
+			'Chrome stopped responding for this saved vault folder (this can happen after a Chrome update). Open Settings and click Reconnect for your vault folder.'
+		);
+	}
+	if (probe === 'permission-denied') {
+		throw new LocalVaultWriteError(
+			'permission-denied',
+			'Chrome can no longer write to this vault folder. Reconnect the folder in settings and try again.'
+		);
+	}
+}
+
 export async function ensureReadWritePermission(
 	handle: FileSystemDirectoryHandle,
 	{
@@ -251,6 +288,7 @@ export async function ensureReadWritePermission(
 		permissionQueryTimeoutMs
 	);
 	if (currentPermission === 'granted') {
+		await assertDirectoryHandleAccessible(handle, permissionQueryTimeoutMs);
 		return;
 	}
 	if (currentPermission === 'unresponsive') {
@@ -286,6 +324,8 @@ export async function ensureReadWritePermission(
 			'Chrome can no longer write to this vault folder. Reconnect the folder in settings and try again.'
 		);
 	}
+
+	await assertDirectoryHandleAccessible(handle, permissionQueryTimeoutMs);
 }
 
 export interface SaveToLocalVaultParams {
@@ -314,7 +354,15 @@ async function writeMarkdownFile(
 		? params.fileContent
 		: mergeNoteContent(params.behavior, existingContent, params.fileContent);
 
-	const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+	let fileHandle: FileSystemFileHandle;
+	try {
+		fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+	} catch (error) {
+		if (isNotFoundDomError(error)) {
+			throw new LocalVaultWriteError('folder-not-found', FOLDER_NOT_FOUND_MESSAGE);
+		}
+		throw error;
+	}
 	const writable = await fileHandle.createWritable();
 	await writable.write(nextContent);
 	await writable.close();

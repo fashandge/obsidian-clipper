@@ -760,9 +760,11 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 			}).catch(async (error) => {
 				console.error('Background local-vault save failed:', error);
 				const code = error instanceof LocalVaultWriteError ? error.code : 'unknown';
+				const errorName = error instanceof Error ? error.name : undefined;
+				const message = error instanceof Error ? error.message : String(error);
 				try {
 					await browser.storage.local.set({
-						local_vault_last_error: { code, at: new Date().toISOString() },
+						local_vault_last_error: { code, errorName, message, at: new Date().toISOString() },
 					});
 				} catch {
 					// ignore — best-effort error surfacing

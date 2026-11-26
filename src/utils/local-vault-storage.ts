@@ -6,6 +6,13 @@ const LOCAL_VAULT_STORE_NAME = 'vault-handles';
 export const HANDLE_PERMISSION_QUERY_TIMEOUT_MS = 2500;
 
 export type LocalVaultPermissionQueryResult = PermissionState | 'unresponsive';
+export type LocalVaultDirectoryProbeResult = 'accessible' | 'not-found' | 'unresponsive' | 'permission-denied';
+export type LocalVaultPermissionState = PermissionState | 'missing' | 'unresponsive' | 'not-found';
+export type LocalVaultFolderConfirmationReason = 'missing-obsidian-folder' | 'name-mismatch';
+
+export interface ChooseLocalVaultFolderOptions {
+	confirmFolder?: (reason: LocalVaultFolderConfirmationReason, folderName: string, vaultName: string) => boolean;
+}
 
 interface StoredVaultHandle {
 	vaultName: string;
@@ -153,16 +160,105 @@ export async function queryLocalVaultHandlePermission(
 	}
 }
 
+export function isNotFoundDomError(error: unknown): boolean {
+	return (
+		error instanceof DOMException
+		|| (typeof error === 'object' && error !== null && 'name' in error)
+	) && (error as { name?: string }).name === 'NotFoundError';
+}
+
+function isPermissionDomError(error: unknown): boolean {
+	if (
+		!(error instanceof DOMException)
+		&& !(typeof error === 'object' && error !== null && 'name' in error)
+	) {
+		return false;
+	}
+	const name = (error as { name?: string }).name;
+	return name === 'NotAllowedError' || name === 'SecurityError';
+}
+
+/**
+ * Verify that a granted FileSystemDirectoryHandle still points to an existing
+ * directory on disk. Chrome's queryPermission() only checks the stored
+ * permission grant and continues returning 'granted' even after the bound
+ * directory has been deleted or moved; probing keys().next() catches that
+ * without modifying the filesystem.
+ */
+export async function probeLocalVaultDirectoryHandle(
+	handle: FileSystemDirectoryHandle,
+	timeoutMs: number = HANDLE_PERMISSION_QUERY_TIMEOUT_MS
+): Promise<LocalVaultDirectoryProbeResult> {
+	if (typeof handle.keys !== 'function') {
+		return 'accessible';
+	}
+
+	const iterator = handle.keys();
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const outcome = await Promise.race([
+			iterator.next().then(() => 'accessible' as const),
+			new Promise<'unresponsive'>((resolve) => {
+				timeoutId = setTimeout(() => resolve('unresponsive'), timeoutMs);
+			}),
+		]);
+		if (outcome === 'accessible' && typeof iterator.return === 'function') {
+			void iterator.return().catch(() => {});
+		}
+		return outcome;
+	} catch (error) {
+		if (isNotFoundDomError(error)) {
+			return 'not-found';
+		}
+		if (isPermissionDomError(error)) {
+			return 'permission-denied';
+		}
+		throw error;
+	} finally {
+		if (timeoutId !== undefined) {
+			clearTimeout(timeoutId);
+		}
+	}
+}
+
+export async function hasObsidianVaultMarker(
+	handle: FileSystemDirectoryHandle
+): Promise<boolean> {
+	try {
+		await handle.getDirectoryHandle('.obsidian');
+		return true;
+	} catch (error) {
+		if (isNotFoundDomError(error)) {
+			return false;
+		}
+		throw error;
+	}
+}
+
 export async function getLocalVaultPermissionState(
 	vaultName: string,
 	mode: FileSystemPermissionMode = 'readwrite',
 	timeoutMs: number = HANDLE_PERMISSION_QUERY_TIMEOUT_MS
-): Promise<PermissionState | 'missing' | 'unresponsive'> {
+): Promise<LocalVaultPermissionState> {
 	const handle = await getStoredLocalVaultHandle(vaultName);
 	if (!handle) {
 		return 'missing';
 	}
-	return queryLocalVaultHandlePermission(handle, mode, timeoutMs);
+	const permission = await queryLocalVaultHandlePermission(handle, mode, timeoutMs);
+	if (permission !== 'granted') {
+		return permission;
+	}
+	const probe = await probeLocalVaultDirectoryHandle(handle, timeoutMs);
+	if (probe === 'not-found') {
+		return 'not-found';
+	}
+	if (probe === 'unresponsive') {
+		return 'unresponsive';
+	}
+	if (probe === 'permission-denied') {
+		return 'prompt';
+	}
+	return 'granted';
 }
 
 export async function requestLocalVaultPermission(
@@ -184,7 +280,10 @@ export async function requestLocalVaultPermission(
 	return handle.requestPermission({ mode });
 }
 
-export async function chooseLocalVaultFolder(vaultName: string): Promise<LocalVaultBinding> {
+export async function chooseLocalVaultFolder(
+	vaultName: string,
+	options: ChooseLocalVaultFolderOptions = {}
+): Promise<LocalVaultBinding | null> {
 	if (!isChromeLocalVaultWriteSupported()) {
 		throw new Error('Chrome local vault writes are not supported in this browser.');
 	}
@@ -204,6 +303,19 @@ export async function chooseLocalVaultFolder(vaultName: string): Promise<LocalVa
 		: 'prompt';
 	if (permission !== 'granted') {
 		throw new Error('Write permission was not granted for this folder.');
+	}
+
+	if (options.confirmFolder) {
+		const hasMarker = await hasObsidianVaultMarker(handle);
+		if (!hasMarker) {
+			if (!options.confirmFolder('missing-obsidian-folder', handle.name, vaultName)) {
+				return null;
+			}
+		} else if (handle.name.toLowerCase() !== vaultName.toLowerCase()) {
+			if (!options.confirmFolder('name-mismatch', handle.name, vaultName)) {
+				return null;
+			}
+		}
 	}
 
 	await setStoredLocalVaultHandle(vaultName, handle);

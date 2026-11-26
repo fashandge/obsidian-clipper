@@ -9,6 +9,13 @@ interface FileSystemHandle {
 	requestPermission?(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>;
 }
 
+interface FileSystemDirectoryHandle {
+	keys?(): {
+		next(): Promise<{ value?: string; done?: boolean }>;
+		return?(): Promise<{ value?: undefined; done?: boolean }>;
+	};
+}
+
 interface DirectoryPickerOptions {
 	id?: string;
 	mode?: FileSystemPermissionMode;
